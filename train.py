@@ -18,7 +18,7 @@ import scipy.ndimage as ndimage
 import torch.nn.functional as F
 
 # Model
-from models.graupp import GRAUpp  # <-- sử dụng tên class mới GRAUpp
+from graupp import GRAUpp
 
 
 # ========================= DATASET ===============================

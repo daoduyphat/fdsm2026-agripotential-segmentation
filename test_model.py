@@ -8,7 +8,7 @@ import pandas as pd
 from tqdm import tqdm
 import SimpleITK as sitk
 from torch.utils.data import DataLoader
-from models.graupp import GRAUpp
+from graupp import GRAUpp
 from preprocess_data import FetalHeadMHADataset
 from analyze_labels import analyze_dataset
 from pathlib import Path
