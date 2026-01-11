@@ -1,6 +1,5 @@
 import os
 import cv2
-import torch
 import numpy as np
 import albumentations as A
 from torch.utils.data import Dataset
@@ -14,11 +13,14 @@ class LandCoverDataset(Dataset):
         self.img_size = img_size
         self.augment = augment
 
-        # Lấy danh sách file ảnh (hỗ trợ jpg, png, tif)
-        self.files = sorted(
-            [f for f in os.listdir(image_dir) if f.lower().endswith(('.jpg', '.png', '.jpeg', '.tif', '.tiff'))])
+        if not os.path.exists(image_dir) or not os.path.exists(label_dir):
+            raise FileNotFoundError(f"Directory not found: {image_dir} or {label_dir}")
 
-        # Định nghĩa phép biến đổi (Augmentation) chuẩn
+        self.files = sorted([
+            f for f in os.listdir(image_dir)
+            if f.lower().endswith(('.jpg', '.png', '.jpeg', '.tif', '.tiff'))
+        ])
+
         if self.augment:
             self.transform = A.Compose([
                 A.Resize(height=img_size[0], width=img_size[1]),
@@ -43,35 +45,33 @@ class LandCoverDataset(Dataset):
         img_file = self.files[index]
         img_path = os.path.join(self.image_dir, img_file)
 
-        # --- XỬ LÝ TÌM FILE MASK ---
-        # Lấy tên file không đuôi (vd: image_01)
         filename_no_ext = os.path.splitext(img_file)[0]
 
-        # Ưu tiên 1: Tìm mask trùng tên đuôi .png (vd: image_01.png)
-        mask_path = os.path.join(self.label_dir, filename_no_ext + ".png")
+        mask_candidates = [
+            os.path.join(self.label_dir, filename_no_ext + ".png"),
+            os.path.join(self.label_dir, filename_no_ext + "_m.png")
+        ]
 
-        # Ưu tiên 2: Nếu không thấy, tìm mask có đuôi _m.png (vd: image_01_m.png)
-        if not os.path.exists(mask_path):
-            mask_path_m = os.path.join(self.label_dir, filename_no_ext + "_m.png")
-            if os.path.exists(mask_path_m):
-                mask_path = mask_path_m
-        # ---------------------------
+        mask_path = None
+        for path in mask_candidates:
+            if os.path.exists(path):
+                mask_path = path
+                break
 
-        # Đọc ảnh
+        if mask_path is None:
+            raise FileNotFoundError(f"Mask not found for image: {img_file}")
+
         image = cv2.imread(img_path)
+        if image is None:
+            raise ValueError(f"Could not read image: {img_path}")
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        # Đọc mask
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-
-        # Nếu mask vẫn None (do lỗi file hoặc đường dẫn), tạo mask đen để không crash (nhưng in cảnh báo)
         if mask is None:
-            # print(f"Warning: Mask not found for {img_file}. Creating empty mask.")
-            mask = np.zeros((self.img_size[0], self.img_size[1]), dtype=np.uint8)
+            raise ValueError(f"Could not read mask: {mask_path}")
 
-        # Áp dụng Augmentation
         augmented = self.transform(image=image, mask=mask)
         image = augmented['image']
-        mask = augmented['mask'].long()  # Mask phải là kiểu Long cho CrossEntropy
+        mask = augmented['mask'].long()
 
         return image, mask

@@ -3,20 +3,21 @@ import argparse
 import time
 import random
 import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from tqdm.auto import tqdm
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from tqdm.auto import tqdm
-import pandas as pd
-import matplotlib.pyplot as plt
 from torch.cuda.amp import autocast, GradScaler
 
 from models.graupp import GRAUpp
 from preprocess_data import LandCoverDataset
 
 
-# --- 1. FOCAL LOSS (Giữ nguyên) ---
+# --- LOSS FUNCTIONS ---
 class FocalLoss(nn.Module):
     def __init__(self, alpha=None, gamma=4.0, reduction='mean'):
         super(FocalLoss, self).__init__()
@@ -36,39 +37,33 @@ class FocalLoss(nn.Module):
             return focal_loss
 
 
-# --- 2. TVERSKY LOSS (VŨ KHÍ MỚI) ---
 class TverskyLoss(nn.Module):
     def __init__(self, alpha=0.3, beta=0.7, smooth=1e-6):
         super(TverskyLoss, self).__init__()
-        self.alpha = alpha  # Phạt False Positive (Đoán thừa)
-        self.beta = beta  # Phạt False Negative (Bỏ sót - Quan trọng hơn)
+        self.alpha = alpha
+        self.beta = beta
         self.smooth = smooth
 
     def forward(self, preds, targets):
-        # preds: [B, C, H, W] -> Softmax
-        # targets: [B, H, W]
         num_classes = preds.shape[1]
         preds = torch.softmax(preds, dim=1)
-
-        # One-hot encoding targets
         targets_one_hot = F.one_hot(targets, num_classes).permute(0, 3, 1, 2).float()
 
-        # Tính True Positive (TP), False Positive (FP), False Negative (FN)
         TP = (preds * targets_one_hot).sum(dim=(2, 3))
         FP = (preds * (1 - targets_one_hot)).sum(dim=(2, 3))
         FN = ((1 - preds) * targets_one_hot).sum(dim=(2, 3))
 
-        # Công thức Tversky Index
         tversky_index = (TP + self.smooth) / (TP + self.alpha * FP + self.beta * FN + self.smooth)
-
         return 1 - tversky_index.mean()
 
 
+# --- METRICS & UTILS ---
 def compute_metrics(preds, targets, num_classes=5, smooth=1e-6):
     pred_cls = torch.argmax(preds, dim=1)
     correct_pixels = torch.eq(pred_cls, targets).float().sum()
     total_pixels = torch.numel(targets)
     accuracy = correct_pixels / total_pixels
+
     iou_list = []
     for cls in range(num_classes):
         pred_inds = torch.eq(pred_cls, cls)
@@ -77,6 +72,7 @@ def compute_metrics(preds, targets, num_classes=5, smooth=1e-6):
         union = pred_inds.float().sum() + target_inds.float().sum() - intersection
         iou = (intersection + smooth) / (union + smooth)
         iou_list.append(iou.item())
+
     return accuracy.item(), np.mean(iou_list)
 
 
@@ -91,14 +87,23 @@ def generate_qualitative(net, loader, dev, save_dir, num_samples=10):
     os.makedirs(save_dir, exist_ok=True)
     net.eval()
     count = 0
-    colors = np.array([[255, 255, 0], [0, 0, 255], [0, 255, 0], [0, 255, 255], [128, 128, 128]], dtype=np.uint8)
+    colors = np.array([
+        [255, 255, 0],  # Class 0: Agri
+        [0, 0, 255],  # Class 1: Water
+        [0, 255, 0],  # Class 2: Woodland
+        [0, 255, 255],  # Class 3: Building
+        [128, 128, 128]  # Class 4: Road
+    ], dtype=np.uint8)
 
     with torch.no_grad():
         for imgs, masks in loader:
             imgs, masks = imgs.to(dev), masks.to(dev)
             with autocast():
                 outputs = net(imgs)
-            preds = torch.argmax(outputs[-1] if isinstance(outputs, list) else outputs, dim=1)
+
+            preds = outputs[-1] if isinstance(outputs, list) else outputs
+            preds = torch.argmax(preds, dim=1)
+
             for i in range(imgs.size(0)):
                 if count >= num_samples: return
                 inp = imgs[i].permute(1, 2, 0).cpu().numpy()
@@ -107,14 +112,17 @@ def generate_qualitative(net, loader, dev, save_dir, num_samples=10):
 
                 fig, axs = plt.subplots(1, 3, figsize=(12, 4))
                 axs[0].imshow(inp)
-                axs[0].set_title("Input");
+                axs[0].set_title("Input")
                 axs[0].axis("off")
+
                 axs[1].imshow(colors[gt])
-                axs[1].set_title("Ground Truth");
+                axs[1].set_title("Ground Truth")
                 axs[1].axis("off")
+
                 axs[2].imshow(colors[pr.astype(np.uint8)])
-                axs[2].set_title("Prediction");
+                axs[2].set_title("Prediction")
                 axs[2].axis("off")
+
                 plt.tight_layout()
                 plt.savefig(os.path.join(save_dir, f"sample_{count:03d}.png"), dpi=150)
                 plt.close(fig)
@@ -132,8 +140,9 @@ def valid_model(net, loader, criterion_focal, criterion_tversky, dev, res_meter)
             imgs, masks = imgs.to(dev), masks.to(dev)
             with autocast():
                 preds = net(imgs)
-                if isinstance(preds, list): preds = preds[-1]
-                # Validation Loss
+                if isinstance(preds, list):
+                    preds = preds[-1]
+
                 loss = 0.2 * criterion_focal(preds, masks) + 0.8 * criterion_tversky(preds, masks)
 
             val_loss += loss.item()
@@ -152,11 +161,11 @@ def train_model(net, loader_train, loader_val, dev, epochs, lr, output_dir, reso
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=patience)
     scaler = GradScaler()
 
-    # Weights
-    class_weights = torch.tensor([0.2, 10.0, 1.0, 5.0, 8.0]).to(dev)
+    # Weights calculated from analyze_labels.py
+    # Class 0: 0.33, Class 1: 1.55, Class 2: 2.38, Class 3: 1.99, Class 4: 2.29
+    class_weights = torch.tensor([0.33, 1.55, 2.38, 1.99, 2.29]).to(dev)
 
     criterion_focal = FocalLoss(alpha=class_weights, gamma=4.0)
-    # Thay Dice bằng Tversky (alpha=0.3, beta=0.7)
     criterion_tversky = TverskyLoss(alpha=0.3, beta=0.7)
 
     accumulation_steps = 4
@@ -166,6 +175,7 @@ def train_model(net, loader_train, loader_val, dev, epochs, lr, output_dir, reso
     log_dir = os.path.join(output_dir, "logs")
     os.makedirs(log_dir, exist_ok=True)
     log_txt = os.path.join(log_dir, f"{model_name}_training_log.txt")
+
     with open(log_txt, "w") as f:
         f.write("Epoch\tTrainLoss\tValLoss\tAccuracy\tIoU\tAgri_Area_km2\n")
 
@@ -202,8 +212,9 @@ def train_model(net, loader_train, loader_val, dev, epochs, lr, output_dir, reso
             loop.set_postfix(loss=current_loss)
 
         avg_train_loss = train_loss / len(loader_train)
-        val_loss, val_acc, val_iou, val_agri_km2 = valid_model(net, loader_val, criterion_focal, criterion_tversky, dev,
-                                                               resolution)
+        val_loss, val_acc, val_iou, val_agri_km2 = valid_model(
+            net, loader_val, criterion_focal, criterion_tversky, dev, resolution
+        )
 
         print(
             f"Ep {epoch} | T.Loss {avg_train_loss:.4f} | V.Loss {val_loss:.4f} | Acc {val_acc:.4f} | IoU {val_iou:.4f} | Agri: {val_agri_km2:.4f} km2")
@@ -241,16 +252,17 @@ def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--data-path", type=str, default="dataset_split")
+    p.add_argument("--data-path", type=str, default="dataset")
     p.add_argument("--output", type=str, default="outputs_landcover")
     p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--batch-size", type=int, default=48)
-    p.add_argument("--lr", type=float, default=5e-5)
+    p.add_argument("--lr", type=float, default=3e-5)
     p.add_argument("--img-size", type=int, nargs=2, default=(512, 512))
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--patience", type=int, default=7)
@@ -277,10 +289,18 @@ if __name__ == "__main__":
     run_dir = os.path.join(args.output, f"run_{timestamp}")
     os.makedirs(run_dir, exist_ok=True)
 
-    train_dataset = LandCoverDataset(os.path.join(train_dir, "images"), os.path.join(train_dir, "masks"),
-                                     img_size=tuple(args.img_size), augment=True)
-    val_dataset = LandCoverDataset(os.path.join(val_dir, "images"), os.path.join(val_dir, "masks"),
-                                   img_size=tuple(args.img_size), augment=False)
+    train_dataset = LandCoverDataset(
+        os.path.join(train_dir, "images"),
+        os.path.join(train_dir, "masks"),
+        img_size=tuple(args.img_size),
+        augment=True
+    )
+    val_dataset = LandCoverDataset(
+        os.path.join(val_dir, "images"),
+        os.path.join(val_dir, "masks"),
+        img_size=tuple(args.img_size),
+        augment=False
+    )
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
@@ -288,8 +308,11 @@ if __name__ == "__main__":
     print("=== Model: GRAU++ (GhostResAttentionUNetPP) ===")
     model = GRAUpp(num_classes=5, input_channels=3, pretrained=False, deep_supervision=True, attention='cbam')
 
-    history = train_model(model, train_loader, val_loader, device, args.epochs, args.lr, run_dir, args.resolution,
-                          "GRAUpp", args.patience)
+    history = train_model(
+        model, train_loader, val_loader, device,
+        args.epochs, args.lr, run_dir, args.resolution,
+        "GRAUpp", args.patience
+    )
 
     df = pd.DataFrame({k: v for k, v in history.items() if k in ["train_loss", "val_loss", "accuracy", "iou"]})
     df['Epoch'] = range(1, len(df) + 1)
@@ -306,10 +329,14 @@ if __name__ == "__main__":
     plt.savefig(os.path.join(run_dir, "training_metrics.png"))
 
     summary_df = pd.DataFrame([{
-        "Model": "GRAUpp", "Trainable_Params": history["params"],
-        "Best_IoU": max(history["iou"]), "Time_Train(s)": round(history["time"], 2),
-        "Epochs": args.epochs, "Batch_Size_Simulated": args.batch_size * 4
+        "Model": "GRAUpp",
+        "Trainable_Params": history["params"],
+        "Best_IoU": max(history["iou"]),
+        "Time_Train(s)": round(history["time"], 2),
+        "Epochs": args.epochs,
+        "Batch_Size_Simulated": args.batch_size * 4
     }])
+
     with pd.ExcelWriter(os.path.join(run_dir, "summary&results.xlsx")) as writer:
         df.to_excel(writer, sheet_name="History", index=False)
         summary_df.to_excel(writer, sheet_name="Summary", index=False)
