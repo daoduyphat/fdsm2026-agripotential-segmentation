@@ -8,4 +8,6 @@ pandas
 openpyxl
 torchsummary
 scikit-learn
-SimpleITK
+opencv-python
+albumentations
+h5py

@@ -1,127 +1,76 @@
 import os
-import random
-import torch
-import numpy as np
-import SimpleITK as sitk
-import torchvision.transforms.functional as TF
+import cv2
+import albumentations as A
 from torch.utils.data import Dataset
-from scipy.ndimage import gaussian_filter
+from albumentations.pytorch import ToTensorV2
 
 
-class FetalHeadMHADataset(Dataset):
-    def __init__(self, image_dir, label_dir, img_size=(256, 256), augment=True):
+class LandCoverDataset(Dataset):
+    def __init__(self, image_dir, label_dir, img_size=(128, 128), augment=True):
         self.image_dir = image_dir
         self.label_dir = label_dir
         self.img_size = img_size
         self.augment = augment
 
+        if not os.path.exists(image_dir) or not os.path.exists(label_dir):
+            raise FileNotFoundError(f"Directory not found: {image_dir} or {label_dir}")
+
         self.files = sorted([
             f for f in os.listdir(image_dir)
-            if f.endswith(".mha") and f in os.listdir(label_dir)
+            if f.lower().endswith(('.jpg', '.png', '.jpeg', '.tif', '.tiff'))
         ])
-        if len(self.files) == 0:
-            raise RuntimeError(f"Không tìm thấy file .mha trùng giữa {image_dir} và {label_dir}")
+
+        if self.augment:
+            self.transform = A.Compose([
+                A.Resize(height=img_size[0], width=img_size[1]),
+                A.HorizontalFlip(p=0.5),
+                A.VerticalFlip(p=0.5),
+                A.RandomRotate90(p=0.5),
+                A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=15, p=0.5),
+                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                ToTensorV2(),
+            ])
+        else:
+            self.transform = A.Compose([
+                A.Resize(height=img_size[0], width=img_size[1]),
+                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+                ToTensorV2(),
+            ])
 
     def __len__(self):
         return len(self.files)
 
-    def read_mha(self, path):
-        img = sitk.ReadImage(path)
-        arr = sitk.GetArrayFromImage(img)
-        arr = np.squeeze(arr)
-        if arr.ndim == 3:
-            arr = arr[0]
-        return arr.astype(np.float32)
+    def __getitem__(self, index):
+        img_file = self.files[index]
+        img_path = os.path.join(self.image_dir, img_file)
 
-    def crop_nonzero(self, img, mask):
-        coords = np.argwhere(mask > 0)
-        if coords.size == 0:
-            return img, mask
-        y0, x0 = coords.min(axis=0)
-        y1, x1 = coords.max(axis=0) + 1
-        return img[y0:y1, x0:x1], mask[y0:y1, x0:x1]
+        filename_no_ext = os.path.splitext(img_file)[0]
 
-    def normalize(self, img):
-        imin, imax = np.min(img), np.max(img)
-        if imax - imin < 1e-6:
-            return np.zeros_like(img)
-        return (img - imin) / (imax - imin)
+        mask_candidates = [
+            os.path.join(self.label_dir, filename_no_ext + ".png"),
+            os.path.join(self.label_dir, filename_no_ext + "_m.png")
+        ]
 
-    def random_augment(self, image, mask):
-        # Xoay ±30°
-        angle = random.uniform(-30, 30)
-        image = TF.rotate(image, angle)
-        mask = TF.rotate(mask, angle)
+        mask_path = None
+        for path in mask_candidates:
+            if os.path.exists(path):
+                mask_path = path
+                break
 
-        # Lật ngang/dọc ngẫu nhiên
-        if random.random() < 0.5:
-            image = TF.hflip(image)
-            mask = TF.hflip(mask)
-        if random.random() < 0.3:
-            image = TF.vflip(image)
-            mask = TF.vflip(mask)
+        if mask_path is None:
+            raise FileNotFoundError(f"Mask not found for image: {img_file}")
 
-        # Zoom ngẫu nhiên
-        scale = random.uniform(0.9, 1.1)
-        h, w = image.shape[-2:]
-        new_h, new_w = int(h * scale), int(w * scale)
-        image = TF.resize(image, (new_h, new_w))
-        mask = TF.resize(mask, (new_h, new_w))
-        image = TF.center_crop(image, (h, w))
-        mask = TF.center_crop(mask, (h, w))
+        image = cv2.imread(img_path)
+        if image is None:
+            raise ValueError(f"Could not read image: {img_path}")
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        # Làm mờ nhẹ hoặc thêm nhiễu
-        if random.random() < 0.5:
-            arr = image.squeeze().numpy()
-            if random.random() < 0.5:
-                arr = gaussian_filter(arr, sigma=random.uniform(0.5, 1.5))
-            else:
-                noise = np.random.normal(0, 0.02, arr.shape)
-                arr = np.clip(arr + noise, 0, 1)
-            image = torch.from_numpy(arr).unsqueeze(0).float()
+        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            raise ValueError(f"Could not read mask: {mask_path}")
 
-        # Điều chỉnh sáng / tương phản
-        if random.random() < 0.5:
-            image = TF.adjust_brightness(image, random.uniform(0.8, 1.2))
-            image = TF.adjust_contrast(image, random.uniform(0.8, 1.2))
+        augmented = self.transform(image=image, mask=mask)
+        image = augmented['image']
+        mask = augmented['mask'].long()
 
         return image, mask
-
-    def __getitem__(self, idx):
-        fname = self.files[idx]
-        img = self.read_mha(os.path.join(self.image_dir, fname))
-        mask = self.read_mha(os.path.join(self.label_dir, fname))
-
-        # Cắt viền đen
-        img, mask = self.crop_nonzero(img, mask)
-
-        # Giảm nhiễu Gaussian
-        img = gaussian_filter(img, sigma=1.0)
-
-        # Chuẩn hóa
-        img = self.normalize(img)
-        mask = (mask > 0).astype(np.float32)
-
-        # Resize và chuyển tensor
-        img = torch.from_numpy(img).unsqueeze(0)
-        mask = torch.from_numpy(mask).unsqueeze(0)
-        img = TF.resize(img, self.img_size)
-        mask = TF.resize(mask, self.img_size)
-
-        # Augment
-        if self.augment:
-            img, mask = self.random_augment(img, mask)
-
-        return img.float(), mask.float()
-
-    @staticmethod
-    def compute_class_weights(dataset):
-        total_pixels = 0
-        pos_pixels = 0
-        for i in range(len(dataset)):
-            _, mask = dataset[i]
-            pos_pixels += mask.sum().item()
-            total_pixels += mask.numel()
-        neg_pixels = total_pixels - pos_pixels
-        pos_weight = neg_pixels / (pos_pixels + 1e-6)
-        return torch.tensor(pos_weight, dtype=torch.float32)

@@ -67,11 +67,7 @@ class ResNet34Encoder(nn.Module):
 
         if input_channels != 3:
             old = resnet.conv1
-            new_conv1 = nn.Conv2d(input_channels, old.out_channels,
-                                  kernel_size=old.kernel_size,
-                                  stride=old.stride,
-                                  padding=old.padding,
-                                  bias=False)
+            new_conv1 = nn.Conv2d(input_channels, old.out_channels, kernel_size=old.kernel_size, stride=old.stride, padding=old.padding, bias=False)
             if pretrained and input_channels == 1:
                 with torch.no_grad():
                     new_conv1.weight[:] = old.weight.mean(dim=1, keepdim=True)
@@ -260,7 +256,7 @@ class GradCAMpp:
 
 # -------------------- GRAU++ (Ghost-Res-Attention-UNet++) --------------------
 class GRAUpp(nn.Module):
-    def __init__(self, num_classes=1, input_channels=1, pretrained=True,
+    def __init__(self, num_classes=5, input_channels=3, pretrained=True,
                  deep_supervision=True, attention=None):
 
         super().__init__()
@@ -335,45 +331,41 @@ class GRAUpp(nn.Module):
         return [out1, out2, out3, out4] if self.deep_supervision else out4
 
 
-# -------------------- Dice + BCE Loss --------------------
-class DiceLoss(nn.Module):
-    def __init__(self, smooth=1e-6):
-        super().__init__()
+# --- LOSS FUNCTIONS ---
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=None, gamma=4.0, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, weight=self.alpha, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
+
+class TverskyLoss(nn.Module):
+    def __init__(self, alpha=0.3, beta=0.7, smooth=1e-6):
+        super(TverskyLoss, self).__init__()
+        self.alpha = alpha
+        self.beta = beta
         self.smooth = smooth
 
-    def forward(self, logits, targets):
-        logits = torch.sigmoid(logits)
-        logits = logits.view(-1)
-        targets = targets.view(-1)
-        inter = (logits * targets).sum()
+    def forward(self, preds, targets):
+        num_classes = preds.shape[1]
+        preds = torch.softmax(preds, dim=1)
+        targets_one_hot = F.one_hot(targets, num_classes).permute(0, 3, 1, 2).float()
 
-        dice = (2 * inter + self.smooth) / (logits.sum() + targets.sum() + self.smooth)
-        return 1 - dice
+        TP = (preds * targets_one_hot).sum(dim=(2, 3))
+        FP = (preds * (1 - targets_one_hot)).sum(dim=(2, 3))
+        FN = ((1 - preds) * targets_one_hot).sum(dim=(2, 3))
 
-
-bce = nn.BCEWithLogitsLoss()
-dice = DiceLoss()
-
-
-def mixed_loss(pred, target):
-    return 0.5 * bce(pred, target) + 0.5 * dice(pred, target)
-
-
-# -------------------- Test --------------------
-if __name__ == "__main__":
-    x = torch.randn(2, 1, 256, 256)
-
-    model = GRAUpp(num_classes=1, input_channels=1, pretrained=False,
-                   deep_supervision=True, attention=None)
-    y = model(x)
-    print("GRAU++ no attention:", [o.shape for o in y])
-
-    model_cbam = GRAUpp(num_classes=1, input_channels=1, pretrained=False,
-                        deep_supervision=True, attention='cbam')
-    ycb = model_cbam(x)
-    print("GRAU++ with CBAM:", [o.shape for o in ycb])
-
-    model_eca = GRAUpp(num_classes=1, input_channels=1, pretrained=False,
-                       deep_supervision=True, attention='eca')
-    yec = model_eca(x)
-    print("GRAU++ with ECA:", [o.shape for o in yec])
+        tversky_index = (TP + self.smooth) / (TP + self.alpha * FP + self.beta * FN + self.smooth)
+        return 1 - tversky_index.mean()
