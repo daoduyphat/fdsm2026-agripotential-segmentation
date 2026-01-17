@@ -8,7 +8,7 @@ import random
 
 # --- CẤU HÌNH ---
 # Thay đường dẫn tới dataset MỚI của bạn ở đây
-DATASET_ROOT = r"E:\datdai\dataset"
+DATASET_ROOT = r"D:\git\agrivison\dataset\DATASET_MERGED"
 
 # Các folder con chứa ảnh và mask (sửa nếu tên folder của bạn khác)
 IMG_DIR_NAME = "images"

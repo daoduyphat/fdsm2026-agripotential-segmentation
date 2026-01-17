@@ -8,53 +8,13 @@ import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
 
-from models.graupp import GRAUpp
+from graupp import GRAUpp
+from graupp import FocalLoss
+from graupp import TverskyLoss
 from preprocess_data import LandCoverDataset
-
-
-# --- LOSS FUNCTIONS ---
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=None, gamma=4.0, reduction='mean'):
-        super(FocalLoss, self).__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-
-    def forward(self, inputs, targets):
-        ce_loss = F.cross_entropy(inputs, targets, weight=self.alpha, reduction='none')
-        pt = torch.exp(-ce_loss)
-        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
-        if self.reduction == 'mean':
-            return focal_loss.mean()
-        elif self.reduction == 'sum':
-            return focal_loss.sum()
-        else:
-            return focal_loss
-
-
-class TverskyLoss(nn.Module):
-    def __init__(self, alpha=0.3, beta=0.7, smooth=1e-6):
-        super(TverskyLoss, self).__init__()
-        self.alpha = alpha
-        self.beta = beta
-        self.smooth = smooth
-
-    def forward(self, preds, targets):
-        num_classes = preds.shape[1]
-        preds = torch.softmax(preds, dim=1)
-        targets_one_hot = F.one_hot(targets, num_classes).permute(0, 3, 1, 2).float()
-
-        TP = (preds * targets_one_hot).sum(dim=(2, 3))
-        FP = (preds * (1 - targets_one_hot)).sum(dim=(2, 3))
-        FN = ((1 - preds) * targets_one_hot).sum(dim=(2, 3))
-
-        tversky_index = (TP + self.smooth) / (TP + self.alpha * FP + self.beta * FN + self.smooth)
-        return 1 - tversky_index.mean()
 
 
 # --- METRICS & UTILS ---
@@ -261,9 +221,9 @@ def parse_args():
     p.add_argument("--data-path", type=str, default="dataset")
     p.add_argument("--output", type=str, default="outputs_landcover")
     p.add_argument("--epochs", type=int, default=30)
-    p.add_argument("--batch-size", type=int, default=48)
-    p.add_argument("--lr", type=float, default=3e-5)
-    p.add_argument("--img-size", type=int, nargs=2, default=(512, 512))
+    p.add_argument("--batch-size", type=int, default=64)
+    p.add_argument("--lr", type=float, default=5e-4)
+    p.add_argument("--img-size", type=int, nargs=2, default=(128, 128))
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--patience", type=int, default=7)
     p.add_argument("--num-workers", type=int, default=2)

@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
 from torch.utils.data import DataLoader
 
-from models.graupp import GRAUpp
+from graupp import GRAUpp
 from preprocess_data import LandCoverDataset
 
 CLASS_COLORS = np.array([
@@ -80,7 +80,7 @@ def test_model(model_path, test_dir, output_dir, res_meter=0.5):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    model = GRAUpp(num_classes=5, input_channels=3, deep_supervision=False, attention='cbam')
+    model = GRAUpp(num_classes=5, input_channels=3, deep_supervision=True, attention='cbam')
 
     if not os.path.exists(model_path):
         print(f"Error: Model not found at {model_path}")
@@ -94,7 +94,7 @@ def test_model(model_path, test_dir, output_dir, res_meter=0.5):
     test_ds = LandCoverDataset(
         os.path.join(test_dir, "images"),
         os.path.join(test_dir, "masks"),
-        img_size=(512, 512),
+        img_size=(128, 128),
         augment=False
     )
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False)

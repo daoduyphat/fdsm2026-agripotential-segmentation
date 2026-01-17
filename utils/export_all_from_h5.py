@@ -5,8 +5,8 @@ import numpy as np
 from tqdm import tqdm
 
 # --- CẤU HÌNH ---
-H5_PATH = r"E:\datdai\dataset.h5"
-OUTPUT_ROOT = r"D:\DATASET_FULL_EXTRACTED"
+H5_PATH = r"D:\git\agrivison\dataset\dataset.h5"
+OUTPUT_ROOT = r"D:\git\agrivison\dataset\DATASET_FULL_EXTRACTED"
 TARGET_LABEL_TYPE = "field"
 
 

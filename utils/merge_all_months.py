@@ -4,10 +4,10 @@ from tqdm import tqdm
 
 # --- CẤU HÌNH ---
 # Folder cũ đang chứa các tháng riêng lẻ
-SOURCE_ROOT = r"D:\DATASET_FULL_EXTRACTED"
+SOURCE_ROOT = r"D:\git\agrivison\dataset\DATASET_FULL_EXTRACTED"
 
 # Folder mới sẽ chứa tất cả ảnh gộp lại
-DEST_ROOT = r"D:\DATASET_MERGED"
+DEST_ROOT = r"D:\git\agrivison\dataset\DATASET_MERGED"
 
 
 def merge_data():

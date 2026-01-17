@@ -1,13 +1,12 @@
 import os
 import cv2
-import numpy as np
 import albumentations as A
 from torch.utils.data import Dataset
 from albumentations.pytorch import ToTensorV2
 
 
 class LandCoverDataset(Dataset):
-    def __init__(self, image_dir, label_dir, img_size=(512, 512), augment=True):
+    def __init__(self, image_dir, label_dir, img_size=(128, 128), augment=True):
         self.image_dir = image_dir
         self.label_dir = label_dir
         self.img_size = img_size
