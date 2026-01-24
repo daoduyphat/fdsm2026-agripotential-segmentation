@@ -5,300 +5,287 @@ import random
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
 
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from graupp import GRAUpp
-from graupp import FocalLoss
-from graupp import TverskyLoss
+
+# IMPORT DATASET
 from preprocess_data import LandCoverDataset
 
+# GLOBAL CONFIG
+NUM_CLASSES = 5
+IGNORE_INDEX = 255
 
-# --- METRICS & UTILS ---
-def compute_metrics(preds, targets, num_classes=5, smooth=1e-6):
-    pred_cls = torch.argmax(preds, dim=1)
-    correct_pixels = torch.eq(pred_cls, targets).float().sum()
-    total_pixels = torch.numel(targets)
-    accuracy = correct_pixels / total_pixels
+CLASS_NAMES = ["Background", "Level 1", "Level 2", "Level 3", "Level 4"]
 
-    iou_list = []
-    for cls in range(num_classes):
-        pred_inds = torch.eq(pred_cls, cls)
-        target_inds = torch.eq(targets, cls)
-        intersection = (pred_inds & target_inds).float().sum()
-        union = pred_inds.float().sum() + target_inds.float().sum() - intersection
-        iou = (intersection + smooth) / (union + smooth)
-        iou_list.append(iou.item())
+PIXEL_SIZE_M = 5
+PIXEL_AREA_KM2 = (PIXEL_SIZE_M ** 2) / 1e6
 
-    return accuracy.item(), np.mean(iou_list)
+COLOR_MAP = np.array([
+    [0, 0, 0],
+    [255, 0, 0],
+    [0, 255, 0],
+    [0, 0, 255],
+    [255, 255, 0]
+], dtype=np.uint8)
 
 
-def calculate_agri_area_km2(preds, res_meter):
-    pred_cls = torch.argmax(preds, dim=1)
-    pixel_count = torch.sum(pred_cls == 0).item()
-    area_m2 = pixel_count * (res_meter ** 2)
-    return area_m2 / 1_000_000.0
+# LOSS
+class DiceLoss(nn.Module):
+    def __init__(self, smooth=1e-6):
+        super().__init__()
+        self.smooth = smooth
+
+    def forward(self, preds, targets):
+        preds = torch.softmax(preds, dim=1)
+        targets_fix = targets.clone()
+        targets_fix[targets == IGNORE_INDEX] = 0
+
+        onehot = F.one_hot(targets_fix, NUM_CLASSES).permute(0, 3, 1, 2).float()
+        valid = (targets != IGNORE_INDEX).float().unsqueeze(1)
+
+        preds = preds * valid
+        onehot = onehot * valid
+
+        inter = (preds * onehot).sum((2, 3))
+        union = preds.sum((2, 3)) + onehot.sum((2, 3))
+
+        dice = (2 * inter + self.smooth) / (union + self.smooth)
+        return 1 - dice.mean()
 
 
-def generate_qualitative(net, loader, dev, save_dir, num_samples=10):
-    os.makedirs(save_dir, exist_ok=True)
-    net.eval()
-    count = 0
-    colors = np.array([
-        [255, 255, 0],  # Class 0: Agri
-        [0, 0, 255],  # Class 1: Water
-        [0, 255, 0],  # Class 2: Woodland
-        [0, 255, 255],  # Class 3: Building
-        [128, 128, 128]  # Class 4: Road
-    ], dtype=np.uint8)
+class JointLoss(nn.Module):
+    def __init__(self, weight):
+        super().__init__()
+        self.ce = nn.CrossEntropyLoss(weight=weight, ignore_index=IGNORE_INDEX)
+        self.dice = DiceLoss()
+
+    def forward(self, preds, targets):
+        return 0.5 * self.ce(preds, targets) + 0.5 * self.dice(preds, targets)
+
+
+# METRICS
+def compute_iou_global(preds, targets):
+    ious = []
+    for cls in range(NUM_CLASSES):
+        tp = np.logical_and(preds == cls, targets == cls).sum()
+        fp = np.logical_and(preds == cls, targets != cls).sum()
+        fn = np.logical_and(preds != cls, targets == cls).sum()
+        denom = tp + fp + fn
+        ious.append(np.nan if denom == 0 else tp / denom)
+    return ious, np.nanmean(ious)
+
+
+def compute_area(preds):
+    return {cls: np.sum(preds == cls) * PIXEL_AREA_KM2 for cls in range(NUM_CLASSES)}
+
+
+# VISUALIZATION
+def save_confusion(preds, targets, path):
+    valid = targets != IGNORE_INDEX
+    cm = confusion_matrix(targets[valid], preds[valid], labels=list(range(NUM_CLASSES)))
+    disp = ConfusionMatrixDisplay(cm, CLASS_NAMES)
+    fig, ax = plt.subplots(figsize=(8, 8))
+    disp.plot(ax=ax, cmap="Blues", values_format="d", colorbar=False)
+    plt.tight_layout()
+    plt.savefig(path, dpi=300)
+    plt.close()
+
+
+def save_qualitative(imgs, gts, preds, path, n=4):
+    mean = np.array([0.485, 0.456, 0.406]).reshape(3, 1, 1)
+    std = np.array([0.229, 0.224, 0.225]).reshape(3, 1, 1)
+
+    fig, axs = plt.subplots(n, 3, figsize=(12, 4 * n))
+    for i in range(n):
+        img = imgs[i].cpu().numpy() * std + mean
+        img = np.clip(img.transpose(1, 2, 0), 0, 1)
+
+        axs[i, 0].imshow(img)
+        axs[i, 1].imshow(COLOR_MAP[gts[i]])
+        axs[i, 2].imshow(COLOR_MAP[preds[i]])
+
+        axs[i, 0].set_title("Input")
+        axs[i, 1].set_title("GT")
+        axs[i, 2].set_title("Prediction")
+        for j in range(3):
+            axs[i, j].axis("off")
+
+    plt.tight_layout()
+    plt.savefig(path, dpi=200)
+    plt.close()
+
+
+# VALIDATION
+def validate(model, loader, criterion, device):
+    model.eval()
+    losses = []
+    preds_all, targets_all = [], []
 
     with torch.no_grad():
-        for imgs, masks in loader:
-            imgs, masks = imgs.to(dev), masks.to(dev)
-            with autocast():
-                outputs = net(imgs)
+        for i, (imgs, masks) in enumerate(loader):
+            imgs, masks = imgs.to(device), masks.to(device)
+            outputs = model(imgs)
+            if isinstance(outputs, list):
+                outputs = outputs[-1]
 
-            preds = outputs[-1] if isinstance(outputs, list) else outputs
-            preds = torch.argmax(preds, dim=1)
+            loss = criterion(outputs, masks)
+            losses.append(loss.item())
 
-            for i in range(imgs.size(0)):
-                if count >= num_samples: return
-                inp = imgs[i].permute(1, 2, 0).cpu().numpy()
-                gt = masks[i].cpu().numpy()
-                pr = preds[i].cpu().float().numpy()
+            preds = torch.argmax(outputs, 1).cpu().numpy()
+            preds_all.append(preds)
+            targets_all.append(masks.cpu().numpy())
 
-                fig, axs = plt.subplots(1, 3, figsize=(12, 4))
-                axs[0].imshow(inp)
-                axs[0].set_title("Input")
-                axs[0].axis("off")
+            if i == 0:
+                save_imgs = imgs
+                save_gts = masks
+                save_preds = preds
 
-                axs[1].imshow(colors[gt])
-                axs[1].set_title("Ground Truth")
-                axs[1].axis("off")
+    preds_all = np.concatenate(preds_all)
+    targets_all = np.concatenate(targets_all)
 
-                axs[2].imshow(colors[pr.astype(np.uint8)])
-                axs[2].set_title("Prediction")
-                axs[2].axis("off")
+    ious, miou = compute_iou_global(preds_all, targets_all)
+    acc = (preds_all == targets_all)[targets_all != IGNORE_INDEX].mean()
 
-                plt.tight_layout()
-                plt.savefig(os.path.join(save_dir, f"sample_{count:03d}.png"), dpi=150)
-                plt.close(fig)
-                count += 1
-
-
-def valid_model(net, loader, criterion_focal, criterion_tversky, dev, res_meter):
-    net.eval()
-    val_loss = 0.0
-    accs, ious = [], []
-    total_agri_km2 = 0.0
-
-    with torch.no_grad():
-        for imgs, masks in loader:
-            imgs, masks = imgs.to(dev), masks.to(dev)
-            with autocast():
-                preds = net(imgs)
-                if isinstance(preds, list):
-                    preds = preds[-1]
-
-                loss = 0.2 * criterion_focal(preds, masks) + 0.8 * criterion_tversky(preds, masks)
-
-            val_loss += loss.item()
-            acc, iou = compute_metrics(preds.float(), masks)
-            accs.append(acc)
-            ious.append(iou)
-            total_agri_km2 += calculate_agri_area_km2(preds, res_meter)
-
-    return val_loss / len(loader), np.mean(accs), np.mean(ious), total_agri_km2
+    return (
+        np.mean(losses),
+        acc,
+        miou,
+        ious,
+        preds_all,
+        targets_all,
+        save_imgs,
+        save_gts,
+        save_preds
+    )
 
 
-def train_model(net, loader_train, loader_val, dev, epochs, lr, output_dir, resolution, model_name="model", patience=5):
-    net.to(dev)
-
-    optimizer = torch.optim.Adam(net.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=patience)
+# TRAIN
+def train(model, train_loader, val_loader, args, device, out_dir):
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "max", patience=3)
     scaler = GradScaler()
 
-    # Weights calculated from analyze_labels.py
-    # Class 0: 0.33, Class 1: 1.55, Class 2: 2.38, Class 3: 1.99, Class 4: 2.29
-    class_weights = torch.tensor([0.33, 1.55, 2.38, 1.99, 2.29]).to(dev)
+    weights = torch.tensor([0.3340, 1.5467, 2.3826, 1.9852, 2.2913]).to(device)
+    criterion = JointLoss(weights)
 
-    criterion_focal = FocalLoss(alpha=class_weights, gamma=4.0)
-    criterion_tversky = TverskyLoss(alpha=0.3, beta=0.7)
+    best_miou = 0
+    best_epoch = 0
+    early = 0
+    history = []
 
-    accumulation_steps = 4
-    best_iou = 0.0
-    history = {"train_loss": [], "val_loss": [], "accuracy": [], "iou": [], "agri_area_km2": []}
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        total_loss = 0
 
-    log_dir = os.path.join(output_dir, "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    log_txt = os.path.join(log_dir, f"{model_name}_training_log.txt")
-
-    with open(log_txt, "w") as f:
-        f.write("Epoch\tTrainLoss\tValLoss\tAccuracy\tIoU\tAgri_Area_km2\n")
-
-    start_time = time.time()
-
-    for epoch in range(1, epochs + 1):
-        net.train()
-        train_loss = 0.0
-        optimizer.zero_grad()
-
-        loop = tqdm(loader_train, desc=f"{model_name} Epoch {epoch}/{epochs}")
-
-        for i, (imgs, masks) in enumerate(loop):
-            imgs, masks = imgs.to(dev), masks.to(dev)
+        for imgs, masks in tqdm(train_loader, desc=f"Epoch {epoch}"):
+            imgs, masks = imgs.to(device), masks.to(device)
+            optimizer.zero_grad()
 
             with autocast():
-                preds = net(imgs)
-                if isinstance(preds, list):
-                    loss_val = sum([0.2 * criterion_focal(p, masks) + 0.8 * criterion_tversky(p, masks) for p in preds])
+                outputs = model(imgs)
+                if isinstance(outputs, list):
+                    w = torch.linspace(0.1, 1.0, len(outputs)).to(device)
+                    w = w / w.sum()
+                    loss = sum(wi * criterion(o, masks) for wi, o in zip(w, outputs))
                 else:
-                    loss_val = 0.2 * criterion_focal(preds, masks) + 0.8 * criterion_tversky(preds, masks)
+                    loss = criterion(outputs, masks)
 
-                loss_val = loss_val / accumulation_steps
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
-            scaler.scale(loss_val).backward()
+            total_loss += loss.item()
 
-            if (i + 1) % accumulation_steps == 0:
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad()
-
-            current_loss = loss_val.item() * accumulation_steps
-            train_loss += current_loss
-            loop.set_postfix(loss=current_loss)
-
-        avg_train_loss = train_loss / len(loader_train)
-        val_loss, val_acc, val_iou, val_agri_km2 = valid_model(
-            net, loader_val, criterion_focal, criterion_tversky, dev, resolution
+        val_loss, acc, miou, ious, preds, targets, s_i, s_g, s_p = validate(
+            model, val_loader, criterion, device
         )
 
-        print(
-            f"Ep {epoch} | T.Loss {avg_train_loss:.4f} | V.Loss {val_loss:.4f} | Acc {val_acc:.4f} | IoU {val_iou:.4f} | Agri: {val_agri_km2:.4f} km2")
+        scheduler.step(miou)
+        areas = compute_area(preds)
 
-        history["train_loss"].append(avg_train_loss)
-        history["val_loss"].append(val_loss)
-        history["accuracy"].append(val_acc)
-        history["iou"].append(val_iou)
-        history["agri_area_km2"].append(val_agri_km2)
+        # >>> ADDED: LOG FULL PER-CLASS
+        print(f"\nEpoch {epoch} | mIoU: {miou:.4f} | Acc: {acc:.2%}")
+        print("Per-class IoU & Area:")
+        for i, cls in enumerate(CLASS_NAMES):
+            iou_str = "N/A" if np.isnan(ious[i]) else f"{ious[i]:.4f}"
+            print(f"  - {cls:<10} | IoU: {iou_str:<7} | Area: {areas[i]:.3f} km²")
 
-        with open(log_txt, "a") as f:
-            f.write(
-                f"{epoch}\t{avg_train_loss:.4f}\t{val_loss:.4f}\t{val_acc:.4f}\t{val_iou:.4f}\t{val_agri_km2:.4f}\n")
+        history.append({
+            "epoch": epoch,
+            "train_loss": total_loss / len(train_loader),
+            "val_loss": val_loss,
+            "accuracy": acc,
+            "mIoU": miou,
+            "lr": optimizer.param_groups[0]["lr"],
+            **{f"IoU_{CLASS_NAMES[i]}": ious[i] for i in range(NUM_CLASSES)},
+            **{f"Area_{CLASS_NAMES[i]}": areas[i] for i in range(NUM_CLASSES)},
+            "Is_Best": ""
+        })
 
-        scheduler.step(val_iou)
+        if miou > best_miou:
+            best_miou = miou
+            best_epoch = epoch
+            early = 0
+            torch.save(model.state_dict(), os.path.join(out_dir, "best_model.pth"))
+            save_confusion(preds, targets, os.path.join(out_dir, "confusion_matrix.png"))
+            save_qualitative(s_i, s_g, s_p, os.path.join(out_dir, "qualitative.png"))
+        else:
+            early += 1
+            if early >= args.patience:
+                break
 
-        if val_iou > best_iou:
-            best_iou = val_iou
-            torch.save(net.state_dict(), os.path.join(output_dir, f"{model_name}_best.pth"))
-            print(f"Save Best IoU: {best_iou:.4f}")
-            generate_qualitative(net, loader_val, dev, os.path.join(output_dir, "qualitative"))
+    torch.save(model.state_dict(), os.path.join(out_dir, "last_model.pth"))
 
-    history["params"] = sum(p.numel() for p in net.parameters() if p.requires_grad)
-    history["time"] = time.time() - start_time
+    for h in history:
+        if h["epoch"] == best_epoch:
+            h["Is_Best"] = "BEST"
 
-    df_log = pd.DataFrame(
-        {k: v for k, v in history.items() if k in ["train_loss", "val_loss", "accuracy", "iou", "agri_area_km2"]})
-    df_log.insert(0, "Epoch", range(1, len(history["train_loss"]) + 1))
-    df_log.to_excel(os.path.join(log_dir, f"{model_name}_training_log.xlsx"), index=False)
-
-    return history
-
-
-def set_seed(seed=42):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--data-path", type=str, default="dataset")
-    p.add_argument("--output", type=str, default="outputs_landcover")
-    p.add_argument("--epochs", type=int, default=30)
-    p.add_argument("--batch-size", type=int, default=64)
-    p.add_argument("--lr", type=float, default=5e-4)
-    p.add_argument("--img-size", type=int, nargs=2, default=(128, 128))
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--patience", type=int, default=7)
-    p.add_argument("--num-workers", type=int, default=2)
-    p.add_argument("--resolution", type=float, default=0.5)
-    return p.parse_args()
+    pd.DataFrame(history).to_excel(
+        os.path.join(out_dir, "training_history.xlsx"), index=False
+    )
 
 
-if __name__ == "__main__":
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# MAIN
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--processed-path", default="dataset_validated")
+    parser.add_argument("--output", default="outputs")
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--lr", type=float, default=5e-4)
+    parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--num-workers", type=int, default=2)
+    args = parser.parse_args()
 
-    args = parse_args()
-    set_seed(args.seed)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Device:", device)
 
-    if not os.path.exists(args.data_path):
-        print(f"Error: Data path '{args.data_path}' not found.")
-        exit(1)
+    out_dir = os.path.join(args.output, time.strftime("%Y%m%d_%H%M%S"))
+    os.makedirs(out_dir, exist_ok=True)
 
-    train_dir = os.path.join(args.data_path, "train")
-    val_dir = os.path.join(args.data_path, "val")
-    timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-    run_dir = os.path.join(args.output, f"run_{timestamp}")
-    os.makedirs(run_dir, exist_ok=True)
+    train_ds = LandCoverDataset(args.processed_path, mode="train", augment=True)
+    val_ds = LandCoverDataset(args.processed_path, mode="val", augment=False)
 
-    train_dataset = LandCoverDataset(
-        os.path.join(train_dir, "images"),
-        os.path.join(train_dir, "masks"),
-        img_size=tuple(args.img_size),
-        augment=True
+    train_loader = DataLoader(
+        train_ds, args.batch_size, shuffle=True, num_workers=args.num_workers
     )
-    val_dataset = LandCoverDataset(
-        os.path.join(val_dir, "images"),
-        os.path.join(val_dir, "masks"),
-        img_size=tuple(args.img_size),
-        augment=False
+    val_loader = DataLoader(
+        val_ds, args.batch_size, shuffle=False, num_workers=args.num_workers
     )
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+    model = GRAUpp(num_classes=NUM_CLASSES, input_channels=3).to(device)
 
-    print("=== Model: GRAU++ (GhostResAttentionUNetPP) ===")
-    model = GRAUpp(num_classes=5, input_channels=3, pretrained=False, deep_supervision=True, attention='cbam')
-
-    history = train_model(
-        model, train_loader, val_loader, device,
-        args.epochs, args.lr, run_dir, args.resolution,
-        "GRAUpp", args.patience
-    )
-
-    df = pd.DataFrame({k: v for k, v in history.items() if k in ["train_loss", "val_loss", "accuracy", "iou"]})
-    df['Epoch'] = range(1, len(df) + 1)
-
-    plt.figure(figsize=(16, 4))
-    metrics_to_plot = ["train_loss", "val_loss", "iou"]
-    for i, col in enumerate(metrics_to_plot):
-        if col in df.columns:
-            plt.subplot(1, 3, i + 1)
-            plt.plot(df["Epoch"], df[col], marker='o')
-            plt.title(col)
-            plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(os.path.join(run_dir, "training_metrics.png"))
-
-    summary_df = pd.DataFrame([{
-        "Model": "GRAUpp",
-        "Trainable_Params": history["params"],
-        "Best_IoU": max(history["iou"]),
-        "Time_Train(s)": round(history["time"], 2),
-        "Epochs": args.epochs,
-        "Batch_Size_Simulated": args.batch_size * 4
-    }])
-
-    with pd.ExcelWriter(os.path.join(run_dir, "summary&results.xlsx")) as writer:
-        df.to_excel(writer, sheet_name="History", index=False)
-        summary_df.to_excel(writer, sheet_name="Summary", index=False)
-
-    print("Train finished.")
+    train(model, train_loader, val_loader, args, device, out_dir)
+    print("[INFO] TRAINING FINISHED")

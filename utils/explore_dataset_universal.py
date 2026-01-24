@@ -6,11 +6,8 @@ from collections import Counter
 import glob
 import random
 
-# --- CẤU HÌNH ---
-# Thay đường dẫn tới dataset MỚI của bạn ở đây
-DATASET_ROOT = r"D:\git\agrivison\dataset\DATASET_MERGED"
+DATASET_ROOT = r"E:\datdai\dataset"
 
-# Các folder con chứa ảnh và mask (sửa nếu tên folder của bạn khác)
 IMG_DIR_NAME = "images"
 MASK_DIR_NAME = "masks"
 
@@ -105,13 +102,10 @@ def analyze_dataset():
 
     for i, idx in enumerate(viz_samples):
         img_path = all_images[idx]
-        # Giả định mask có cùng tên file (hoặc xử lý đổi đuôi nếu cần)
-        # Logic tìm mask tương ứng:
+
         filename = os.path.basename(img_path)
         img_dir = os.path.dirname(img_path)
 
-        # Thử tìm mask ở thư mục masks song song
-        # .../train/images/abc.jpg -> .../train/masks/abc.png
         possible_mask_dir = img_dir.replace(IMG_DIR_NAME, MASK_DIR_NAME)
 
         # Thử đuôi .png trước (phổ biến cho mask)
@@ -129,14 +123,13 @@ def analyze_dataset():
         # Đọc mask
         if os.path.exists(mask_path):
             mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-            # Nhân màu lên cho dễ nhìn nếu giá trị nhỏ (0,1,2)
             if mask.max() < 20:
                 mask_vis = mask * 50
             else:
                 mask_vis = mask
         else:
             mask_vis = np.zeros(img.shape[:2])  # Mask đen nếu không tìm thấy
-            print(f"   -> Không tìm thấy mask cho: {filename}")
+            print(f" Không tìm thấy mask cho: {filename}")
 
         axs[i, 0].imshow(img)
         axs[i, 0].set_title(f"Image: {filename}")
@@ -148,7 +141,7 @@ def analyze_dataset():
 
     plt.tight_layout()
     plt.savefig("dataset_preview.png")
-    print("✅ Đã lưu ảnh kiểm tra: dataset_preview.png")
+    print(" Đã lưu ảnh kiểm tra: dataset_preview.png")
 
 
 if __name__ == "__main__":

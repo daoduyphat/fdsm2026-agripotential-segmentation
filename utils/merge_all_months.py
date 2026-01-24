@@ -3,10 +3,8 @@ import shutil
 from tqdm import tqdm
 
 # --- CẤU HÌNH ---
-# Folder cũ đang chứa các tháng riêng lẻ
 SOURCE_ROOT = r"D:\git\agrivison\dataset\DATASET_FULL_EXTRACTED"
 
-# Folder mới sẽ chứa tất cả ảnh gộp lại
 DEST_ROOT = r"D:\git\agrivison\dataset\DATASET_MERGED"
 
 
@@ -35,7 +33,6 @@ def merge_data():
         os.makedirs(dest_img_dir, exist_ok=True)
         os.makedirs(dest_mask_dir, exist_ok=True)
 
-        # Duyệt qua các folder tháng (01_january, 02_february...)
         month_folders = [d for d in os.listdir(split_src) if os.path.isdir(os.path.join(split_src, d))]
 
         for month in month_folders:
@@ -54,8 +51,6 @@ def merge_data():
             for filename in tqdm(files, desc=f"   Gộp {month}", leave=False):
                 if not filename.lower().endswith(('.jpg', '.png')): continue
 
-                # --- XỬ LÝ ẢNH ---
-                # Tên mới: 01_january_img_00001.jpg
                 new_filename = f"{month}_{filename}"
 
                 old_img_path = os.path.join(src_img_dir, filename)
@@ -63,18 +58,13 @@ def merge_data():
 
                 shutil.copy2(old_img_path, new_img_path)
 
-                # --- XỬ LÝ MASK ---
-                # Mask tương ứng phải là .png
                 mask_name = os.path.splitext(filename)[0] + ".png"
                 old_mask_path = os.path.join(src_mask_dir, mask_name)
 
-                # Nếu không tìm thấy mask .png thì thử tìm chính nó (đề phòng)
                 if not os.path.exists(old_mask_path):
                     old_mask_path = os.path.join(src_mask_dir, filename)
 
                 if os.path.exists(old_mask_path):
-                    # Tên mask mới cũng phải có tháng để khớp với ảnh
-                    # 01_january_img_00001.png
                     new_mask_filename = f"{month}_{os.path.splitext(filename)[0]}.png"
                     new_mask_path = os.path.join(dest_mask_dir, new_mask_filename)
 

@@ -61,13 +61,16 @@ class GhostBasicBlock(nn.Module):
 
 # -------------------- ResNet34 Encoder --------------------
 class ResNet34Encoder(nn.Module):
-    def __init__(self, input_channels=1, pretrained=True):
+    def __init__(self, input_channels=3, pretrained=True):
         super().__init__()
-        resnet = models.resnet34(pretrained=pretrained)
+        weights = models.ResNet34_Weights.DEFAULT if pretrained else None
+        resnet = models.resnet34(weights=weights)
 
         if input_channels != 3:
             old = resnet.conv1
-            new_conv1 = nn.Conv2d(input_channels, old.out_channels, kernel_size=old.kernel_size, stride=old.stride, padding=old.padding, bias=False)
+            new_conv1 = nn.Conv2d(input_channels, old.out_channels,
+                                  kernel_size=old.kernel_size, stride=old.stride,
+                                  padding=old.padding, bias=False)
             if pretrained and input_channels == 1:
                 with torch.no_grad():
                     new_conv1.weight[:] = old.weight.mean(dim=1, keepdim=True)
@@ -105,7 +108,7 @@ class ResNet34Encoder(nn.Module):
 
 # -------------------- Attention Modules --------------------
 
-# ECA: Efficient Channel Attention
+# 1. ECA
 class ECA(nn.Module):
     def __init__(self, channels, b=1, gamma=2):
         super().__init__()
@@ -126,55 +129,33 @@ class ECA(nn.Module):
         return x * y
 
 
-# CBAM Channel Attention
-class ChannelAttention(nn.Module):
-    def __init__(self, in_channels, ratio=16):
+# 2. CBAM
+class CBAM(nn.Module):
+    def __init__(self, channels, ratio=16):
         super().__init__()
-        mid = max(1, in_channels // ratio)
+        hidden = max(1, channels // ratio)  # <<< FIX DUY NHẤT
+
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.max_pool = nn.AdaptiveMaxPool2d(1)
-
-        self.shared = nn.Sequential(
-            nn.Conv2d(in_channels, mid, 1, bias=False),
+        self.fc = nn.Sequential(
+            nn.Conv2d(channels, hidden, 1, bias=False),
             nn.ReLU(inplace=True),
-            nn.Conv2d(mid, in_channels, 1, bias=False)
+            nn.Conv2d(hidden, channels, 1, bias=False)
         )
+        self.sigmoid_channel = nn.Sigmoid()
 
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        avg = self.shared(self.avg_pool(x))
-        mx = self.shared(self.max_pool(x))
-        return x * self.sigmoid(avg + mx)
-
-
-# CBAM Spatial Attention
-class SpatialAttention(nn.Module):
-    def __init__(self, kernel_size=7):
-        super().__init__()
-        padding = (kernel_size - 1) // 2
-        self.conv = nn.Conv2d(2, 1, kernel_size, padding=padding, bias=False)
-        self.sigmoid = nn.Sigmoid()
+        self.conv_spatial = nn.Conv2d(2, 1, 7, padding=3, bias=False)
+        self.sigmoid_spatial = nn.Sigmoid()
 
     def forward(self, x):
-        avg = torch.mean(x, dim=1, keepdim=True)
-        mx, _ = torch.max(x, dim=1, keepdim=True)
-        out = torch.cat([avg, mx], dim=1)
-        out = self.sigmoid(self.conv(out))
-        return x * out
+        avg_out = self.fc(self.avg_pool(x))
+        max_out = self.fc(self.max_pool(x))
+        out = x * self.sigmoid_channel(avg_out + max_out)
 
-
-# CBAM Full Module
-class CBAM(nn.Module):
-    def __init__(self, channels):
-        super().__init__()
-        self.channel = ChannelAttention(channels)
-        self.spatial = SpatialAttention()
-
-    def forward(self, x):
-        x = self.channel(x)
-        x = self.spatial(x)
-        return x
+        avg_out = torch.mean(out, dim=1, keepdim=True)
+        max_out, _ = torch.max(out, dim=1, keepdim=True)
+        spatial_out = self.sigmoid_spatial(self.conv_spatial(torch.cat([avg_out, max_out], dim=1)))
+        return out * spatial_out
 
 
 # -------------------- Residual Conv with Attention --------------------
@@ -189,13 +170,12 @@ class ResidualConv(nn.Module):
         self.skip = nn.Conv2d(in_ch, out_ch, 1, bias=False) if in_ch != out_ch else None
         self.skip_bn = nn.BatchNorm2d(out_ch) if in_ch != out_ch else None
 
-        att = attention.lower() if isinstance(attention, str) else None
-        if att == 'cbam':
-            self.attention = CBAM(out_ch)
-        elif att == 'eca':
-            self.attention = ECA(out_ch)
-        else:
-            self.attention = None
+        self.attention = None
+        if attention:
+            if attention.lower() == 'cbam':
+                self.attention = CBAM(out_ch)
+            elif attention.lower() == 'eca':
+                self.attention = ECA(out_ch)
 
     def forward(self, x):
         out = F.relu(self.bn1(self.conv1(x)))
@@ -205,167 +185,85 @@ class ResidualConv(nn.Module):
             x = self.skip_bn(self.skip(x))
 
         out = out + x
-
         if self.attention is not None:
             out = self.attention(out)
 
         return F.relu(out)
 
 
-# -------------------- Grad-CAM++ --------------------
-class GradCAMpp:
-    def __init__(self, model, target_layer):
-        self.model = model
-        self.target_layer = target_layer
-        self.gradients = None
-        self.activations = None
-        self._register_hooks()
-
-    def _register_hooks(self):
-        self.target_layer.register_forward_hook(
-            lambda m, i, o: setattr(self, "activations", o)
-        )
-        self.target_layer.register_backward_hook(
-            lambda m, gi, go: setattr(self, "gradients", go[0])
-        )
-
-    def generate(self, x, target_mask=None):
-        self.model.zero_grad()
-        y = self.model(x)
-        y = y[-1] if isinstance(y, list) else y
-
-        score = torch.sum(y * target_mask) if target_mask is not None else torch.sum(y)
-        score.backward(retain_graph=True)
-
-        grads = self.gradients
-        acts = self.activations
-
-        weights = torch.mean(grads ** 2, dim=(2, 3), keepdim=True)
-        alpha = torch.sum(weights * acts, dim=(2, 3)) / \
-                (torch.sum(weights * acts ** 2, dim=(2, 3)) * 2 + 1e-8)
-
-        weights = torch.sum(alpha * F.relu(grads), dim=(2, 3), keepdim=True)
-        cam = torch.sum(weights * acts, dim=1, keepdim=True)
-
-        cam = F.relu(cam)
-        cam = (cam - cam.min()) / (cam.max() + 1e-8)
-        cam = F.interpolate(cam, size=x.shape[2:], mode='bilinear', align_corners=False)
-
-        return cam.detach()
-
-
-# -------------------- GRAU++ (Ghost-Res-Attention-UNet++) --------------------
+# -------------------- GRAU++ --------------------
 class GRAUpp(nn.Module):
     def __init__(self, num_classes=5, input_channels=3, pretrained=True,
-                 deep_supervision=True, attention=None):
-
+                 deep_supervision=True, attention='eca'):
         super().__init__()
-        f = [64, 64, 128, 256, 512]
+
+        self.filters = [64, 64, 128, 256, 512]
         self.encoder = ResNet34Encoder(input_channels, pretrained)
         self.deep_supervision = deep_supervision
 
-        att = attention.lower() if isinstance(attention, str) else None
+        self.reduce1 = nn.Conv2d(self.filters[1], self.filters[0], 1)
+        self.reduce2 = nn.Conv2d(self.filters[2], self.filters[1], 1)
+        self.reduce3 = nn.Conv2d(self.filters[3], self.filters[2], 1)
+        self.reduce4 = nn.Conv2d(self.filters[4], self.filters[3], 1)
 
-        self.reduce1 = nn.Conv2d(f[1], f[0], 1)
-        self.reduce2 = nn.Conv2d(f[2], f[1], 1)
-        self.reduce3 = nn.Conv2d(f[3], f[2], 1)
-        self.reduce4 = nn.Conv2d(f[4], f[3], 1)
+        self.conv0_1 = ResidualConv(self.filters[0] * 2, self.filters[0], attention)
+        self.conv0_2 = ResidualConv(self.filters[0] * 3, self.filters[0], attention)
+        self.conv0_3 = ResidualConv(self.filters[0] * 4, self.filters[0], attention)
+        self.conv0_4 = ResidualConv(self.filters[0] * 5, self.filters[0], attention)
 
-        self.conv0_1 = ResidualConv(f[0] * 2, f[0], att)
-        self.conv1_1 = ResidualConv(f[1] * 2, f[1], att)
-        self.conv2_1 = ResidualConv(f[2] * 2, f[2], att)
-        self.conv3_1 = ResidualConv(f[3] * 2, f[3], att)
+        self.conv1_1 = ResidualConv(self.filters[1] * 2, self.filters[1], attention)
+        self.conv1_2 = ResidualConv(self.filters[1] * 3, self.filters[1], attention)
+        self.conv1_3 = ResidualConv(self.filters[1] * 4, self.filters[1], attention)
 
-        self.conv0_2 = ResidualConv(f[0] * 3, f[0], att)
-        self.conv1_2 = ResidualConv(f[1] * 3, f[1], att)
-        self.conv2_2 = ResidualConv(f[2] * 3, f[2], att)
+        self.conv2_1 = ResidualConv(self.filters[2] * 2, self.filters[2], attention)
+        self.conv2_2 = ResidualConv(self.filters[2] * 3, self.filters[2], attention)
 
-        self.conv0_3 = ResidualConv(f[0] * 4, f[0], att)
-        self.conv1_3 = ResidualConv(f[1] * 4, f[1], att)
+        self.conv3_1 = ResidualConv(self.filters[3] * 2, self.filters[3], attention)
 
-        self.conv0_4 = ResidualConv(f[0] * 5, f[0], att)
+        self.final_x0_1 = nn.Conv2d(self.filters[0], num_classes, 1)
+        self.final_x0_2 = nn.Conv2d(self.filters[0], num_classes, 1)
+        self.final_x0_3 = nn.Conv2d(self.filters[0], num_classes, 1)
+        self.final_x0_4 = nn.Conv2d(self.filters[0], num_classes, 1)
 
-        self.final_x0_1 = nn.Conv2d(f[0], num_classes, 1)
-        self.final_x0_2 = nn.Conv2d(f[0], num_classes, 1)
-        self.final_x0_3 = nn.Conv2d(f[0], num_classes, 1)
-        self.final_x0_4 = nn.Conv2d(f[0], num_classes, 1)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
         x0_0, x1_0, x2_0, x3_0, x4_0 = self.encoder(x)
 
-        x0_1 = self.conv0_1(torch.cat([x0_0,
-                                       F.interpolate(self.reduce1(x1_0), x0_0.shape[2:], mode='bilinear')], 1))
+        s0 = (x0_0.shape[2], x0_0.shape[3])
+        s1 = (x1_0.shape[2], x1_0.shape[3])
+        s2 = (x2_0.shape[2], x2_0.shape[3])
+        s3 = (x3_0.shape[2], x3_0.shape[3])
 
-        x1_1 = self.conv1_1(torch.cat([x1_0,
-                                       F.interpolate(self.reduce2(x2_0), x1_0.shape[2:], mode='bilinear')], 1))
+        x0_1 = self.conv0_1(torch.cat([x0_0, F.interpolate(self.reduce1(x1_0), s0, mode='bilinear', align_corners=True)], 1))
+        x1_1 = self.conv1_1(torch.cat([x1_0, F.interpolate(self.reduce2(x2_0), s1, mode='bilinear', align_corners=True)], 1))
+        x2_1 = self.conv2_1(torch.cat([x2_0, F.interpolate(self.reduce3(x3_0), s2, mode='bilinear', align_corners=True)], 1))
+        x3_1 = self.conv3_1(torch.cat([x3_0, F.interpolate(self.reduce4(x4_0), s3, mode='bilinear', align_corners=True)], 1))
 
-        x2_1 = self.conv2_1(torch.cat([x2_0,
-                                       F.interpolate(self.reduce3(x3_0), x2_0.shape[2:], mode='bilinear')], 1))
+        x0_2 = self.conv0_2(torch.cat([x0_0, x0_1, F.interpolate(self.reduce1(x1_1), s0, mode='bilinear', align_corners=True)], 1))
+        x1_2 = self.conv1_2(torch.cat([x1_0, x1_1, F.interpolate(self.reduce2(x2_1), s1, mode='bilinear', align_corners=True)], 1))
+        x2_2 = self.conv2_2(torch.cat([x2_0, x2_1, F.interpolate(self.reduce3(x3_1), s2, mode='bilinear', align_corners=True)], 1))
 
-        x3_1 = self.conv3_1(torch.cat([x3_0,
-                                       F.interpolate(self.reduce4(x4_0), x3_0.shape[2:], mode='bilinear')], 1))
+        x0_3 = self.conv0_3(torch.cat([x0_0, x0_1, x0_2, F.interpolate(self.reduce1(x1_2), s0, mode='bilinear', align_corners=True)], 1))
+        x1_3 = self.conv1_3(torch.cat([x1_0, x1_1, x1_2, F.interpolate(self.reduce2(x2_2), s1, mode='bilinear', align_corners=True)], 1))
 
-        x0_2 = self.conv0_2(torch.cat([x0_0, x0_1,
-                                       F.interpolate(self.reduce1(x1_1), x0_0.shape[2:], mode='bilinear')], 1))
+        x0_4 = self.conv0_4(torch.cat([x0_0, x0_1, x0_2, x0_3, F.interpolate(self.reduce1(x1_3), s0, mode='bilinear', align_corners=True)], 1))
 
-        x1_2 = self.conv1_2(torch.cat([x1_0, x1_1,
-                                       F.interpolate(self.reduce2(x2_1), x1_0.shape[2:], mode='bilinear')], 1))
+        out_size = (x.shape[2], x.shape[3])
+        out4 = F.interpolate(self.final_x0_4(x0_4), out_size, mode='bilinear', align_corners=True)
 
-        x2_2 = self.conv2_2(torch.cat([x2_0, x2_1,
-                                       F.interpolate(self.reduce3(x3_1), x2_0.shape[2:], mode='bilinear')], 1))
+        if self.deep_supervision and self.training:
+            out1 = F.interpolate(self.final_x0_1(x0_1), out_size, mode='bilinear', align_corners=True)
+            out2 = F.interpolate(self.final_x0_2(x0_2), out_size, mode='bilinear', align_corners=True)
+            out3 = F.interpolate(self.final_x0_3(x0_3), out_size, mode='bilinear', align_corners=True)
+            return [out1, out2, out3, out4]
 
-        x0_3 = self.conv0_3(torch.cat([x0_0, x0_1, x0_2,
-                                       F.interpolate(self.reduce1(x1_2), x0_0.shape[2:], mode='bilinear')], 1))
-
-        x1_3 = self.conv1_3(torch.cat([x1_0, x1_1, x1_2,
-                                       F.interpolate(self.reduce2(x2_2), x1_0.shape[2:], mode='bilinear')], 1))
-
-        x0_4 = self.conv0_4(torch.cat([x0_0, x0_1, x0_2, x0_3,
-                                       F.interpolate(self.reduce1(x1_3), x0_0.shape[2:], mode='bilinear')], 1))
-
-        out1 = F.interpolate(self.final_x0_1(x0_1), size=x.shape[2:], mode='bilinear')
-        out2 = F.interpolate(self.final_x0_2(x0_2), size=x.shape[2:], mode='bilinear')
-        out3 = F.interpolate(self.final_x0_3(x0_3), size=x.shape[2:], mode='bilinear')
-        out4 = F.interpolate(self.final_x0_4(x0_4), size=x.shape[2:], mode='bilinear')
-
-        return [out1, out2, out3, out4] if self.deep_supervision else out4
-
-
-# --- LOSS FUNCTIONS ---
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=None, gamma=4.0, reduction='mean'):
-        super(FocalLoss, self).__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-
-    def forward(self, inputs, targets):
-        ce_loss = F.cross_entropy(inputs, targets, weight=self.alpha, reduction='none')
-        pt = torch.exp(-ce_loss)
-        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
-        if self.reduction == 'mean':
-            return focal_loss.mean()
-        elif self.reduction == 'sum':
-            return focal_loss.sum()
-        else:
-            return focal_loss
-
-
-class TverskyLoss(nn.Module):
-    def __init__(self, alpha=0.3, beta=0.7, smooth=1e-6):
-        super(TverskyLoss, self).__init__()
-        self.alpha = alpha
-        self.beta = beta
-        self.smooth = smooth
-
-    def forward(self, preds, targets):
-        num_classes = preds.shape[1]
-        preds = torch.softmax(preds, dim=1)
-        targets_one_hot = F.one_hot(targets, num_classes).permute(0, 3, 1, 2).float()
-
-        TP = (preds * targets_one_hot).sum(dim=(2, 3))
-        FP = (preds * (1 - targets_one_hot)).sum(dim=(2, 3))
-        FN = ((1 - preds) * targets_one_hot).sum(dim=(2, 3))
-
-        tversky_index = (TP + self.smooth) / (TP + self.alpha * FP + self.beta * FN + self.smooth)
-        return 1 - tversky_index.mean()
+        return out4

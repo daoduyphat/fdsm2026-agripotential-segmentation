@@ -11,9 +11,6 @@ TARGET_LABEL_TYPE = "field"
 
 
 def normalize_rgb(img_10ch):
-    """
-    Sửa lỗi CV_64F: Chuẩn hóa về uint8 TRƯỚC khi dùng OpenCV
-    """
     # 1. Lấy 3 kênh RGB (Kênh 0, 1, 2)
     # Shape đầu vào: (10, 128, 128) -> Lấy (3, 128, 128)
     rgb = img_10ch[0:3]
@@ -94,8 +91,6 @@ def export_everything_to_D():
                         cv2.imwrite(os.path.join(save_img_dir, f"{filename}.jpg"), img_out)
                         cv2.imwrite(os.path.join(save_mask_dir, f"{filename}.png"), mask_out)
                     except Exception as e:
-                        # In lỗi gọn hơn để không spam màn hình
-                        # print(f"Lỗi tại ảnh {i}: {e}")
                         pass
 
     print(f"\n HOÀN TẤT! Đã fix lỗi float64. Kiểm tra ổ D: {OUTPUT_ROOT}")
