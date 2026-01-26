@@ -1,182 +1,146 @@
 import os
-
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import argparse
 import torch
-import matplotlib.pyplot as plt
 import numpy as np
 import cv2
 from glob import glob
 from tqdm import tqdm
 
+# [IMPORTANT] Force Matplotlib to run in the background to prevent freezing on Windows
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
-def analyze_dataset_precise(mask_dir, save_path="bao_cao_chi_tiet.png"):
-    """
-    PHÂN TÍCH DATASET SIÊU CHI TIẾT (BẢN CUỐI CÙNG)
-    - Quét 100% pixel (không resize, không sai số)
-    - Phân tích đa chiều: Số lượng Pixel, Tần suất xuất hiện trên ảnh, Trọng số.
-    - Tự động gộp Class 5 vào Class 4.
-    """
 
-    # 1. TIM KIEM TAT CA CAC FILE MASK
+def analyze_dataset_precise(mask_dir, save_path="detailed_report_5_classes_bfpr.png"):
     extensions = ['*.png', '*.jpg', '*.jpeg', '*.tif', '*.tiff']
     mask_files = []
     for ext in extensions:
         mask_files.extend(glob(os.path.join(mask_dir, ext)))
 
     if len(mask_files) == 0:
-        print(f"[LOI] Khong tim thay file mask nao tai {mask_dir}")
+        print(f"[ERROR] No mask files found in {mask_dir}")
         return
 
     total_images = len(mask_files)
-    print(f"[THONG TIN] Tim thay {total_images} file mask.")
-    print("[THONG TIN] Bat dau quet toan bo tung pixel (100% data)...")
+    print(f"Found {total_images} mask files.")
+    print("Starting full pixel-wise analysis...")
 
-    # Khoi tao bo dem
+    # [CHANGED] 6 -> 5
     global_pixel_counts = np.zeros(5, dtype=np.int64)
-    image_presence_counts = np.zeros(5, dtype=np.int64)  # So luong anh co chua class nay
+    image_presence_counts = np.zeros(5, dtype=np.int64)
 
-
-    lut = np.full(256, 255, dtype=np.uint8)
-    lut[0] = 0  # Nen (Background)
-    lut[1] = 1  # Lop 1
-    lut[2] = 2  # Lop 2
-    lut[3] = 3  # Lop 3
-    lut[4] = 4  # Lop 4
-    lut[5] = 4  # Lop 5 => Gop ve Lop 4
-
-    # 3. QUET DU LIEU CHI TIET
-    for mask_path in tqdm(mask_files, desc="Dang phan tich"):
+    # 3. DETAILED DATA SCANNING (USING ULTRA-FAST BINCOUNT ALGORITHM)
+    for mask_path in tqdm(mask_files, desc="Analyzing"):
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         if mask is None:
             continue
 
-        # Map pixel
-        mapped = lut[mask]
-        mapped = mapped[mapped != 255]  # Bo qua pixel 255
+        # Exclude error pixels (255) if any
+        valid_mask = mask[mask != 255]
 
-        # Dem pixel trong anh hien tai
-        unique, counts = np.unique(mapped, return_counts=True)
+        if valid_mask.size > 0:
+            # [CHANGED] minlength=6 -> minlength=5
+            counts = np.bincount(valid_mask.ravel(), minlength=5)
+            # Just in case there are values >= 5, truncate them to avoid index out of bounds
+            global_pixel_counts += counts[:5]
 
-        # Cap nhat tong pixel va tan suat xuat hien tren anh
-        for u, c in zip(unique, counts):
-            class_id = int(u)
-            global_pixel_counts[class_id] += int(c)
-            image_presence_counts[class_id] += 1  # Anh nay co chua class nay
+            # Check which classes are present in the image (ignore classes >= 5)
+            present_classes = np.unique(valid_mask)
+            valid_classes = present_classes[present_classes < 5]
+            image_presence_counts[valid_classes] += 1
 
-    # 4. TINH TOAN THONG KE
+    # 4. STATISTICAL CALCULATIONS
+    # [CHANGED] 6 -> 5 and removed "Very High"
     num_classes = 5
-    class_ids = list(range(num_classes))
-    class_names = ["Nen (Bg)", "Lop 1", "Lop 2", "Lop 3", "Lop 4"]
+    class_names = ["Background", "Very Low", "Low", "Medium", "High"]
 
     total_pixels = np.sum(global_pixel_counts)
     if total_pixels == 0:
-        print("[LOI] Khong co pixel hop le nao duoc tim thay.")
         return
 
-    # Tinh toan trong so (Inverse Class Frequency)
+    # Calculate weights (Inverse Class Frequency)
     weights = []
     for count in global_pixel_counts:
         if count > 0:
             w = total_pixels / (num_classes * count)
         else:
-            w = 1.0  # Gia tri an toan neu class khong ton tai
+            w = 1.0
         weights.append(w)
 
     weights_tensor = torch.tensor(weights, dtype=torch.float32)
 
-    # 5. IN BAO CAO RA MAN HINH
-    print("\n" + "=" * 85)
-    print("                BAO CAO PHAN TICH DU LIEU CHI TIET (5 CLASS)")
-    print("=" * 85)
-    print(f"Tong so anh quet  : {total_images}")
-    print(f"Tong so pixel quet: {total_pixels:,}")
-    print("-" * 85)
-    print(
-        f"{'ID':<3} | {'Ten Lop':<12} | {'So luong Pixel':<18} | {'% Pixel':<8} | {'% So Anh Xuat Hien':<18} | {'Trong so'}")
-    print("-" * 85)
+    # 5. PRINT REPORT TO CONSOLE
+    print("\n" + "=" * 90)
+    print("                DETAILED DATASET ANALYSIS REPORT (5 CLASSES - AFTER PRUNING)")
+    print("=" * 90)
+    print(f"Total images scanned: {total_images}")
+    print(f"Total pixels scanned: {total_pixels:,}")
+    print("-" * 90)
+    print(f"{'ID':<3} | {'Class Name':<12} | {'Pixel Count':<18} | {'Pixel %':<8} | {'Image Presence %':<18} | {'Weight'}")
+    print("-" * 90)
 
     for i in range(num_classes):
         name = class_names[i]
         pix_count = global_pixel_counts[i]
         img_count = image_presence_counts[i]
         w = weights[i]
-
         pix_percent = (pix_count / total_pixels) * 100
         img_percent = (img_count / total_images) * 100
+        print(f"{i:<3} | {name:<12} | {pix_count:<18,} | {pix_percent:5.2f}%   | {img_count:<5} imgs ({img_percent:5.1f}%) | {w:.4f}")
 
-        print(
-            f"{i:<3} | {name:<12} | {pix_count:<18,} | {pix_percent:5.2f}%   | {img_count:<5} anh ({img_percent:5.1f}%) | {w:.4f}")
-
-    print("=" * 85)
-    print("\n[Hanh dong] Copy dong nay vao file train.py de can bang du lieu:")
+    print("=" * 90)
+    print("\n[Action] Copy this line into your train.py to balance the dataset:")
     print(f"class_weights = {weights_tensor}")
-    print("=" * 85)
+    print("=" * 90)
 
-    # 6. VE BIEU DO CHI TIET (3 BIEU DO)
+    # 6. PLOT DETAILED CHARTS (FIXED FREEZING AND MARGIN ISSUES)
     try:
-        # Thiet lap font va mau sac
-        plt.rcParams.update({'font.size': 10})
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-        colors = ['gray', 'crimson', 'forestgreen', 'royalblue', 'saddlebrown']
+        plt.rcParams.update({'font.size': 11})
+        # Increase figure size to prevent text overlap
+        fig, axes = plt.subplots(1, 3, figsize=(20, 7))
 
-        # Bieu do 1: Tong so luong Pixel (Log scale)
+        # [CHANGED] Removed the 6th color
+        colors = ['black', '#8B0000', '#FFA500', '#FFFF00', '#32CD32']
+
         bars1 = axes[0].bar(class_names, global_pixel_counts, color=colors, edgecolor='black')
         axes[0].set_yscale('log')
-        axes[0].set_title("1. Tong So Luong Pixel (Log Scale)")
-        axes[0].set_ylabel("So luong Pixel")
+        axes[0].set_title("1. Total Pixel Count (Log Scale)")
+        axes[0].set_ylabel("Pixel Count")
         axes[0].grid(axis='y', linestyle='--', alpha=0.5)
-        # Hien thi phan tram tren dinh cot
-        for i, bar in enumerate(bars1):
-            pct = (global_pixel_counts[i] / total_pixels) * 100
-            axes[0].text(bar.get_x() + bar.get_width() / 2, bar.get_height(), f"{pct:.1f}%",
-                         ha='center', va='bottom', fontweight='bold')
 
-        # Bieu do 2: Tan suat xuat hien tren Anh
         image_presence_percentages = (image_presence_counts / total_images) * 100
         bars2 = axes[1].bar(class_names, image_presence_percentages, color=colors, edgecolor='black', alpha=0.8)
         axes[1].set_ylim(0, 105)
-        axes[1].set_title("2. Ti Le Xuat Hien Tren Anh (%)")
-        axes[1].set_ylabel("% So luong Anh")
+        axes[1].set_title("2. Image Presence Rate (%)")
+        axes[1].set_ylabel("% of Images")
         axes[1].grid(axis='y', linestyle='--', alpha=0.5)
-        for i, bar in enumerate(bars2):
-            axes[1].text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1,
-                         f"{image_presence_percentages[i]:.1f}%", ha='center', fontweight='bold')
 
-        # Bieu do 3: Trong so huan luyen (Weights)
         bars3 = axes[2].bar(class_names, weights, color=colors, edgecolor='black', hatch='//')
-        axes[2].set_title("3. Trong So Huan Luyen (Class Weights)")
-        axes[2].set_ylabel("Gia tri Trong so")
+        axes[2].set_title("3. Training Weights (Class Weights)")
+        axes[2].set_ylabel("Weight Value")
         axes[2].grid(axis='y', linestyle='--', alpha=0.5)
-        for i, bar in enumerate(bars3):
-            axes[2].text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
-                         f"{weights[i]:.2f}", ha='center', va='bottom', fontweight='bold')
 
-        plt.suptitle("BAO CAO PHAN TICH DU LIEU (LAND COVER 5 CLASSES)", fontsize=16, fontweight='bold', y=0.98)
-        plt.tight_layout(rect=[0, 0, 1, 0.95])
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        print(f"\n[THONG TIN] Da luu bieu do vao file: {save_path}")
+        plt.suptitle("DATASET ANALYSIS REPORT (AGRICULTURAL POTENTIAL - 5 CLASSES)", fontsize=18, fontweight='bold', y=0.98)
+        plt.tight_layout(pad=2.0) # Fix margin issues
+        plt.savefig(save_path, dpi=300)
+        plt.close(fig) # Free up RAM immediately
+        print(f"\n[INFO] Chart saved to: {save_path}")
 
     except Exception as e:
-        print(f"[LOI] Khong the ve bieu do: {e}")
+        print(f"[ERROR] Cannot plot charts: {e}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-path", type=str, default="dataset/train")
-    parser.add_argument("--output", type=str, default="bao_cao_chi_tiet.png")
+    parser.add_argument("--data-path", type=str, default=r"E:\datdai\dataset_final\train")
+    parser.add_argument("--output", type=str, default="detailed_report_5_classes_atpr.png")
     args = parser.parse_args()
 
-    # Tu dong tim thu muc masks
     mask_dir = os.path.join(args.data_path, "masks")
-
     if not os.path.exists(mask_dir):
-        if os.path.exists(args.data_path):
-            mask_dir = args.data_path
-        else:
-            print("[LOI] Khong the xac dinh thu muc chua masks.")
-            exit(1)
+        mask_dir = args.data_path
 
     analyze_dataset_precise(mask_dir, save_path=args.output)

@@ -12,3 +12,5 @@ opencv-python
 albumentations
 h5py
 seaborn
+tifffile
+xlsxwriter
