@@ -339,7 +339,7 @@ def main():
     set_seed(0)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--processed-path", default="dataset_final/train")
+    parser.add_argument("--processed-path", default="dataset_final")
     parser.add_argument("--output", default="final_result_production")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=64)
