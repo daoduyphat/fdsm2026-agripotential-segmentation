@@ -6,7 +6,6 @@ import tifffile
 from torch.utils.data import Dataset
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
-
 import matplotlib.colors
 
 # =========================
@@ -28,27 +27,33 @@ labels_cmap = matplotlib.colors.ListedColormap([
 # =========================
 class LandCoverDataset(Dataset):
     def __init__(self, data_root, mode="train", augment=True):
+        """
+        data_root: Duong dan den thu muc chua cac file .txt (vd: 'dataset_final')
+        mode: 'train', 'val', hoặc 'test'
+        """
         self.data_root = data_root
         self.mode = mode
 
-        # Kiem tra su ton tai cua file split
+        # Su dung os.path.join de dam bao tinh tuong thich tren moi OS
         txt_path = os.path.join(data_root, f"{mode}.txt")
-        if not os.path.exists(txt_path):
-            raise FileNotFoundError(
-                f"Loi: Khong tim thay file split {txt_path}. Hay dam bao ban da co san cac file .txt.")
 
-        with open(txt_path) as f:
+        # Duong dan den thu muc con chua anh/mask (vd: dataset_final/train)
+        self.specific_dir = os.path.join(data_root, mode)
+
+        if not os.path.exists(txt_path):
+            raise FileNotFoundError(f"Loi: Khong tim thay file chi muc {txt_path}")
+
+        with open(txt_path, "r") as f:
             self.names = f.read().splitlines()
 
-        print(f"[INFO] Da load tap {mode.upper()}: {len(self.names)} mau.")
+        print(f"[INFO] Da load tap {mode.upper()}: {len(self.names)} mau tu {txt_path}")
 
-        # Augmentation cho tap train
         if augment and mode == "train":
             self.transform = A.Compose([
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
                 A.RandomRotate90(p=0.5),
-                A.ShiftScaleRotate(0.05, 0.1, 15, p=0.5),
+                A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=15, p=0.5),
                 ToTensorV2()
             ])
         else:
@@ -60,19 +65,18 @@ class LandCoverDataset(Dataset):
     def __getitem__(self, idx):
         base = self.names[idx]
 
-        # 1. Doc anh TIF 10 kenh va chuan hoa Min-Max
-        img_path = os.path.join(self.data_root, "images", f"{base}.tif")
-        img = tifffile.imread(img_path).astype(np.float32)
+        # Duong dan tuong doi den tung file anh va mask
+        img_path = os.path.join(self.specific_dir, "images", f"{base}.tif")
+        mask_path = os.path.join(self.specific_dir, "masks", f"{base}.png")
 
+        # Doc va chuan hoa anh TIF 10 kenh
+        img = tifffile.imread(img_path).astype(np.float32)
         min_v, max_v = img.min(), img.max()
         if max_v > min_v:
             img = (img - min_v) / (max_v - min_v)
 
-        # 2. Doc mat na PNG
-        mask_path = os.path.join(self.data_root, "masks", f"{base}.png")
+        # Doc mask PNG va ep vao khoang label 0-4
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-
-        # Dam bao label nam trong khoang 0-4
         mask = np.clip(mask, 0, NUM_CLASSES - 1)
 
         out = self.transform(image=img, mask=mask)
@@ -84,36 +88,44 @@ class LandCoverDataset(Dataset):
 # =========================
 def check_existing_splits(data_root):
     required_files = ["train.txt", "val.txt", "test.txt"]
-    all_exist = True
-    print(f"\n--- KIEM TRA FILE SPLIT TAI: {data_root} ---")
+    print(f"\n--- KIEM TRA CAU TRUC DU LIEU TAI: {data_root} ---")
 
+    all_exist = True
     for f in required_files:
-        path = os.path.join(data_root, f)
-        if os.path.exists(path):
-            with open(path) as f_in:
+        txt_path = os.path.join(data_root, f)
+        if os.path.exists(txt_path):
+            with open(txt_path, "r") as f_in:
                 count = len(f_in.read().splitlines())
             print(f"  OK {f}: Ton tai ({count} mau)")
+
+            # Kiem tra thu muc du lieu vat ly (train, val, test)
+            sub_dir = os.path.join(data_root, f.replace(".txt", ""))
+            if not os.path.exists(sub_dir):
+                print(f"  LOI: Thieu thu muc du lieu thuc te '{sub_dir}'")
+                all_exist = False
         else:
-            print(f"  LOI {f}: THIEU")
+            print(f"  LOI {f}: Khong tim thay file .txt")
             all_exist = False
     return all_exist
 
 
 # =========================
-# MAIN (CHI CHAY TEST)
+# MAIN (TEST LOGIC)
 # =========================
 if __name__ == "__main__":
-    ROOT = "dataset_final/train"
+    # Su dung duong dan tuong doi (gia su ban dang dung o thu muc datdai)
+    ROOT = "dataset_final"
 
     if check_existing_splits(ROOT):
         try:
             ds = LandCoverDataset(ROOT, mode="train", augment=False)
-            img, mask = ds[0]
-            print("\n[CHECK SAMPLE SUCCESS]")
-            print(f"  - Image Shape: {img.shape}")
-            print(f"  - Mask Shape : {mask.shape}")
-            print(f"  - Unique Labels: {torch.unique(mask).tolist()}")
+            if len(ds) > 0:
+                img, mask = ds[0]
+                print("\n[CHECK SAMPLE SUCCESS]")
+                print(f"  - Image Shape: {img.shape}")
+                print(f"  - Mask Shape : {mask.shape}")
+                print(f"  - Unique Labels: {torch.unique(mask).tolist()}")
         except Exception as e:
-            print(f"\nLoi khi load du lieu: {e}")
+            print(f"\nLoi trong qua trinh doc mau: {e}")
     else:
-        print("\nVui long bo sung cac file .txt vao thu muc du lieu truoc khi train.")
+        print("\nVui long kiem tra lai vi tri folder 'dataset_final' so voi file script nay.")

@@ -254,7 +254,7 @@ def train(model, train_loader, val_loader, args, device, out_dir):
     early_trigger = 0
     PATIENCE = 5  # Dừng sớm nếu không cải thiện trong 5 epoch
 
-    print(f"\n[INFO] Bắt đầu huấn luyện với cấu hình VÔ ĐỊCH (Top 1 Grid Search):")
+    print(f"\n[INFO] Bắt đầu huấn luyện với Top 1 Grid Search:")
     print(f"       Optimizer: Adam | LR: 0.0005 | Seed: 0")
     print(f"       Class Weights: {FINAL_CLASS_WEIGHTS}")
 
@@ -341,8 +341,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--processed-path", default="dataset_final/train")
     parser.add_argument("--output", default="final_result_production")
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch-size", type=int, default=48)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=2)
     args = parser.parse_args()
 
