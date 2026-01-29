@@ -1,6 +1,5 @@
 import os
 import cv2
-import torch
 import numpy as np
 import tifffile
 from torch.utils.data import Dataset
@@ -23,31 +22,58 @@ labels_cmap = matplotlib.colors.ListedColormap([
 
 
 # =========================
-# 1. DATASET 10-KENH (LOAD TU TXT)
+# 1. DATASET CLASS
 # =========================
 class LandCoverDataset(Dataset):
     def __init__(self, data_root, mode="train", augment=True):
-        """
-        data_root: Duong dan den thu muc chua cac file .txt (vd: 'dataset_final')
-        mode: 'train', 'val', hoặc 'test'
-        """
         self.data_root = data_root
         self.mode = mode
 
-        # Su dung os.path.join de dam bao tinh tuong thich tren moi OS
+        # 1. Dinh nghia duong dan
         txt_path = os.path.join(data_root, f"{mode}.txt")
-
-        # Duong dan den thu muc con chua anh/mask (vd: dataset_final/train)
-        self.specific_dir = os.path.join(data_root, mode)
+        self.image_dir = os.path.join(data_root, mode, "images")
+        self.mask_dir = os.path.join(data_root, mode, "masks")
 
         if not os.path.exists(txt_path):
-            raise FileNotFoundError(f"Loi: Khong tim thay file chi muc {txt_path}")
+            raise FileNotFoundError(f"Lỗi: Không tìm thấy file danh sách {txt_path}")
 
+        if not os.path.exists(self.image_dir):
+            raise FileNotFoundError(f"Lỗi: Không tìm thấy thư mục ảnh {self.image_dir}")
+
+        # 2. Doc danh sach tu file TXT
         with open(txt_path, "r") as f:
-            self.names = f.read().splitlines()
+            raw_names = f.read().splitlines()
 
-        print(f"[INFO] Da load tap {mode.upper()}: {len(self.names)} mau tu {txt_path}")
+        # ============================================================
+        # [QUAN TRỌNG] BỘ LỌC KIỂM TRA TỒN TẠI (VALIDATION CHECK)
+        # ============================================================
+        self.names = []
+        missing_count = 0
+        last_missing_name = None  # [FIX] Khởi tạo biến để lưu tên file lỗi
 
+        print(f"[INIT] Đang kiểm tra {len(raw_names)} file trong tập {mode}...")
+
+        for name in raw_names:
+            img_p = os.path.join(self.image_dir, f"{name}.tif")
+            mask_p = os.path.join(self.mask_dir, f"{name}.png")
+
+            # Chi them vao danh sach neu CA 2 FILE (anh va mask) deu ton tai
+            if os.path.exists(img_p) and os.path.exists(mask_p):
+                self.names.append(name)
+            else:
+                missing_count += 1
+                last_missing_name = name  # [FIX] Lưu lại tên file bị thiếu tại đây
+
+        # In bao cao neu co file thieu
+        if missing_count > 0:
+            print(f"[WARNING] Đã loại bỏ {missing_count} file có trong .txt nhưng thiếu ảnh/mask thực tế!")
+            # [FIX] Dùng biến last_missing_name thay vì name
+            print(f"          (Ví dụ file thiếu: {last_missing_name})")
+
+        print(f"[INFO] Final load tập {mode.upper()}: {len(self.names)} mẫu hợp lệ.")
+        # ============================================================
+
+        # Augmentation
         if augment and mode == "train":
             self.transform = A.Compose([
                 A.HorizontalFlip(p=0.5),
@@ -64,19 +90,23 @@ class LandCoverDataset(Dataset):
 
     def __getitem__(self, idx):
         base = self.names[idx]
+        img_path = os.path.join(self.image_dir, f"{base}.tif")
+        mask_path = os.path.join(self.mask_dir, f"{base}.png")
 
-        # Duong dan tuong doi den tung file anh va mask
-        img_path = os.path.join(self.specific_dir, "images", f"{base}.tif")
-        mask_path = os.path.join(self.specific_dir, "masks", f"{base}.png")
+        try:
+            img = tifffile.imread(img_path).astype(np.float32)
+        except Exception:
+            print(f"[ERROR] File lỗi format: {img_path}")
+            img = np.zeros((128, 128, 10), dtype=np.float32)
 
-        # Doc va chuan hoa anh TIF 10 kenh
-        img = tifffile.imread(img_path).astype(np.float32)
         min_v, max_v = img.min(), img.max()
         if max_v > min_v:
             img = (img - min_v) / (max_v - min_v)
 
-        # Doc mask PNG va ep vao khoang label 0-4
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            mask = np.zeros((128, 128), dtype=np.uint8)
+
         mask = np.clip(mask, 0, NUM_CLASSES - 1)
 
         out = self.transform(image=img, mask=mask)
@@ -84,48 +114,48 @@ class LandCoverDataset(Dataset):
 
 
 # =========================
-# 2. KIEM TRA TINH TRANG SPLIT
+# 2. HÀM KIỂM TRA (CHECKER)
 # =========================
 def check_existing_splits(data_root):
-    required_files = ["train.txt", "val.txt", "test.txt"]
-    print(f"\n--- KIEM TRA CAU TRUC DU LIEU TAI: {data_root} ---")
-
-    all_exist = True
-    for f in required_files:
-        txt_path = os.path.join(data_root, f)
-        if os.path.exists(txt_path):
-            with open(txt_path, "r") as f_in:
-                count = len(f_in.read().splitlines())
-            print(f"  OK {f}: Ton tai ({count} mau)")
-
-            # Kiem tra thu muc du lieu vat ly (train, val, test)
-            sub_dir = os.path.join(data_root, f.replace(".txt", ""))
-            if not os.path.exists(sub_dir):
-                print(f"  LOI: Thieu thu muc du lieu thuc te '{sub_dir}'")
-                all_exist = False
+    required_txt = ["train.txt", "val.txt", "test.txt"]
+    print(f"\n--- KIỂM TRA DỮ LIỆU TẠI: '{data_root}' ---")
+    all_ok = True
+    for fname in required_txt:
+        fpath = os.path.join(data_root, fname)
+        if os.path.exists(fpath):
+            with open(fpath, 'r') as f:
+                count = len(f.read().splitlines())
+            print(f"   {fname:<10} : OK ({count} mẫu)")
         else:
-            print(f"  LOI {f}: Khong tim thay file .txt")
-            all_exist = False
-    return all_exist
+            print(f"   {fname:<10} : KHÔNG TÌM THẤY")
+            all_ok = False
+
+    for folder in ["train", "val", "test"]:
+        dpath = os.path.join(data_root, folder)
+        if os.path.exists(dpath):
+            print(f"   Folder {folder:<5}: OK")
+        else:
+            print(f"   Folder {folder:<5}: KHÔNG TÌM THẤY")
+            all_ok = False
+    return all_ok
 
 
-# =========================
-# MAIN (TEST LOGIC)
-# =========================
 if __name__ == "__main__":
-    # Su dung duong dan tuong doi (gia su ban dang dung o thu muc datdai)
     ROOT = "dataset_final"
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    print(f"[DEBUG] Script đang chạy tại: {current_dir}")
 
     if check_existing_splits(ROOT):
+        print("\n--> Cấu trúc dữ liệu chuẩn. Đang thử load mẫu...")
         try:
-            ds = LandCoverDataset(ROOT, mode="train", augment=False)
+            ds = LandCoverDataset(ROOT, mode="val", augment=False)
             if len(ds) > 0:
                 img, mask = ds[0]
-                print("\n[CHECK SAMPLE SUCCESS]")
+                print("[SUCCESS] Test load mẫu thành công!")
                 print(f"  - Image Shape: {img.shape}")
                 print(f"  - Mask Shape : {mask.shape}")
-                print(f"  - Unique Labels: {torch.unique(mask).tolist()}")
+                print(f"  - Unique Labels: {np.unique(mask.numpy()).tolist()}")
         except Exception as e:
-            print(f"\nLoi trong qua trinh doc mau: {e}")
+            print(f"[ERROR] Lỗi khi đọc mẫu: {e}")
     else:
-        print("\nVui long kiem tra lai vi tri folder 'dataset_final' so voi file script nay.")
+        print("\n[CẢNH BÁO] Kiểm tra lại tên thư mục hoặc vị trí đặt file code!")
