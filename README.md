@@ -21,23 +21,47 @@ Phân đoạn ảnh vệ tinh đa phổ (10 kênh) thành 5 lớp (0–4) và ư
 
 ```mermaid
 flowchart TD
-	A[HDF5 dữ liệu gốc<br/>(sentinel2, labels)] -->|utils/export_all_from_h5.py| B{OUTPUT_ROOT}
-	B --> B1[train/<month>/images/*.tif\ntrain/<month>/masks/*.png]
-	B --> B2[val/<month>/...]
-	B --> B3[test/<month>/...]
+    A[HDF5 gốc<br/>(Sentinel-2 + labels)] 
+        -->|export_all_from_h5.py| 
+    B[OUTPUT_ROOT/<br/>train,val,test/<br/>month/images|masks]
 
-	B -->|utils/merge_all_months.py| C[dataset_final/<split>/images|masks]
-	C --> D[train.txt, val.txt, test.txt\n(basename thuần)]
-	D -->|verify_data.py| E{Kiểm tra dữ liệu}
-	E -->|OK| F[dataset_pruning.py\n(Tùy chọn: loại ảnh nền/ít thông tin)]
-	F --> G[rebalance_data.py\n(Tùy chọn: chia 70/20/10)]
-	G --> H[analyze_labels.py\n(Phân tích nhãn, gợi ý class_weights)]
-	H --> I[train.py\n(Huấn luyện + log + ảnh minh hoạ)]
-	I --> J[gridsearch.py\n(80 cấu hình Opt×LR×Seed)]
-	J --> K[bestgridsearch.py\n(Tổng hợp ranking)]
-	I --> L[test_model.py\n(Báo cáo test + ảnh minh hoạ)]
+    B -->|merge_all_months.py| 
+    C[dataset_final/<br/>train,val,test/<br/>images|masks]
+
+    C -->|generate_split_txt.py| 
+    D[train.txt / val.txt / test.txt<br/>(basename thuần)]
+
+    D -->|verify_data.py| 
+    E{Kiểm tra tồn tại<br/>+ rò rỉ}
+
+    E -->|OK| 
+    F[dataset_pruning.py<br/>(tùy chọn)]
+
+    F --> 
+    G[rebalance_data.py<br/>(tùy chọn<br/>70/20/10)]
+
+    G -->|normalize_split_txt.py| 
+    H[.txt chuẩn hóa<br/>(chỉ còn basename)]
+
+    H -->|analyze_labels.py| 
+    I[Phân tích phân bố nhãn<br/>+ class weights]
+
+    H -->|train.py| 
+    J[Huấn luyện chính thức<br/>+ log + model]
+
+    H -->|gridsearch.py| 
+    K[Grid Search<br/>Opt × LR × Seed]
+
+    K -->|bestgridsearch.py| 
+    L[MASTER_RANKING.xlsx]
+
+    J -->|test_model.py| 
+    M[Báo cáo Test<br/>+ Area km² + ảnh]
 ```
-
+Lưu ý:
+- `OUTPUT_ROOT` là thư mục trung gian sau khi xuất từ HDF5.
+- `dataset_final/` là thư mục dữ liệu cuối cùng dùng cho huấn luyện và đánh giá.
+- Mọi script huấn luyện (`train.py`, `gridsearch.py`, `test_model.py`) đều đọc từ `dataset_final/`.
 Gợi ý: Xem chi tiết từng bước ở phần “Quy Trình Chi Tiết” bên dưới.
 
 ## Cấu Trúc Dữ Liệu
