@@ -21,42 +21,57 @@ Phân đoạn ảnh vệ tinh đa phổ (10 kênh) thành 5 lớp (0–4) và ư
 
 ```mermaid
 flowchart TD
-    A[HDF5 gốc<br/>(Sentinel-2 + labels)] 
-        -->|export_all_from_h5.py| 
-    B[OUTPUT_ROOT/<br/>train,val,test/<br/>month/images|masks]
+    A["HDF5 gốc
+    Sentinel-2 & labels"]
+        -->|export_all_from_h5.py|
+    B["OUTPUT_ROOT
+    train / val / test
+    month / images, masks"]
 
-    B -->|merge_all_months.py| 
-    C[dataset_final/<br/>train,val,test/<br/>images|masks]
+    B -->|merge_all_months.py|
+    C["dataset_final
+    train / val / test
+    images, masks"]
 
-    C -->|generate_split_txt.py| 
-    D[train.txt / val.txt / test.txt<br/>(basename thuần)]
+    C -->|generate_split_txt.py|
+    D["train.txt
+    val.txt
+    test.txt
+    (basename only)"]
 
-    D -->|verify_data.py| 
-    E{Kiểm tra tồn tại<br/>+ rò rỉ}
+    D -->|verify_data.py|
+    E{"Kiểm tra tồn tại
+    và rò rỉ"}
 
-    E -->|OK| 
-    F[dataset_pruning.py<br/>(tùy chọn)]
+    E -->|OK|
+    F["dataset_pruning.py
+    (optional)"]
 
-    F --> 
-    G[rebalance_data.py<br/>(tùy chọn<br/>70/20/10)]
+    F --> G["rebalance_data.py
+    (optional 70/20/10)"]
 
-    G -->|normalize_split_txt.py| 
-    H[.txt chuẩn hóa<br/>(chỉ còn basename)]
+    G -->|normalize_split_txt.py|
+    H["Split files chuẩn
+    basename only"]
 
-    H -->|analyze_labels.py| 
-    I[Phân tích phân bố nhãn<br/>+ class weights]
+    H -->|analyze_labels.py|
+    I["Thống kê nhãn
+    gợi ý class weights"]
 
-    H -->|train.py| 
-    J[Huấn luyện chính thức<br/>+ log + model]
+    H -->|train.py|
+    J["Huấn luyện chính
+    log + best model"]
 
-    H -->|gridsearch.py| 
-    K[Grid Search<br/>Opt × LR × Seed]
+    H -->|gridsearch.py|
+    K["Grid Search
+    Opt x LR x Seed"]
 
-    K -->|bestgridsearch.py| 
-    L[MASTER_RANKING.xlsx]
+    K -->|bestgridsearch.py|
+    L["MASTER_RANKING.xlsx"]
 
-    J -->|test_model.py| 
-    M[Báo cáo Test<br/>+ Area km² + ảnh]
+    J -->|test_model.py|
+    M["Test report
+    IoU + Area km2"]
 ```
 Lưu ý:
 - `OUTPUT_ROOT` là thư mục trung gian sau khi xuất từ HDF5.
