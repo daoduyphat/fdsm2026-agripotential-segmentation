@@ -22,56 +22,73 @@ labels_cmap = matplotlib.colors.ListedColormap([
 
 
 # =========================
-# 1. DATASET CLASS
+# 1. DATASET CLASS (ĐÃ SỬA LỖI ĐỌC SOURCE)
 # =========================
 class LandCoverDataset(Dataset):
     def __init__(self, data_root, mode="train", augment=True):
+        """
+        data_root: Đường dẫn chứa ẢNH GỐC (Train/Val/Test)
+        mode: 'train', 'val', hoặc 'test'
+        """
         self.data_root = data_root
         self.mode = mode
 
-        # 1. Dinh nghia duong dan
+        # 1. Đọc file txt
         txt_path = os.path.join(data_root, f"{mode}.txt")
-        self.image_dir = os.path.join(data_root, mode, "images")
-        self.mask_dir = os.path.join(data_root, mode, "masks")
+
+        # Fallback: Nếu không thấy trong data_root, thử tìm ở thư mục hiện tại
+        if not os.path.exists(txt_path):
+            txt_path = f"{mode}.txt"
 
         if not os.path.exists(txt_path):
-            raise FileNotFoundError(f"Lỗi: Không tìm thấy file danh sách {txt_path}")
+            raise FileNotFoundError(f"Lỗi: Không tìm thấy file danh sách {mode}.txt tại {data_root} hoặc thư mục gốc.")
 
-        if not os.path.exists(self.image_dir):
-            raise FileNotFoundError(f"Lỗi: Không tìm thấy thư mục ảnh {self.image_dir}")
-
-        # 2. Doc danh sach tu file TXT
+        print(f"[INIT] Đang đọc danh sách từ: {txt_path}")
         with open(txt_path, "r") as f:
-            raw_names = f.read().splitlines()
+            lines = f.read().splitlines()
 
         # ============================================================
-        # [QUAN TRỌNG] BỘ LỌC KIỂM TRA TỒN TẠI (VALIDATION CHECK)
+        # [QUAN TRỌNG] PARSE DANH SÁCH & KIỂM TRA TỒN TẠI
         # ============================================================
-        self.names = []
+        self.samples = []
         missing_count = 0
-        last_missing_name = None  # [FIX] Khởi tạo biến để lưu tên file lỗi
+        last_missing_info = None
 
-        print(f"[INIT] Đang kiểm tra {len(raw_names)} file trong tập {mode}...")
+        print(f"[CHECK] Đang quét {len(lines)} dòng trong danh sách tập {mode}...")
 
-        for name in raw_names:
-            img_p = os.path.join(self.image_dir, f"{name}.tif")
-            mask_p = os.path.join(self.mask_dir, f"{name}.png")
+        for line in lines:
+            line = line.strip()
+            if not line: continue
 
-            # Chi them vao danh sach neu CA 2 FILE (anh va mask) deu ton tai
-            if os.path.exists(img_p) and os.path.exists(mask_p):
-                self.names.append(name)
+            # [FIX] Xử lý format "tên_file,nguồn" (do script rebalance tạo ra)
+            if "," in line:
+                name, source_folder = line.split(",")
+            else:
+                # Format cũ (fallback nếu file txt chưa chuẩn)
+                name = line
+                source_folder = mode
+
+                # Tạo đường dẫn vật lý dựa trên SOURCE FOLDER
+            img_path = os.path.join(self.data_root, source_folder, "images", f"{name}.tif")
+            mask_path = os.path.join(self.data_root, source_folder, "masks", f"{name}.png")
+
+            # Kiểm tra tồn tại
+            if os.path.exists(img_path) and os.path.exists(mask_path):
+                # Lưu lại cả tên và nguồn gốc để dùng trong __getitem__
+                self.samples.append((name, source_folder))
             else:
                 missing_count += 1
-                last_missing_name = name  # [FIX] Lưu lại tên file bị thiếu tại đây
+                last_missing_info = f"{name} (in folder {source_folder})"
 
-        # In bao cao neu co file thieu
         if missing_count > 0:
-            print(f"[WARNING] Đã loại bỏ {missing_count} file có trong .txt nhưng thiếu ảnh/mask thực tế!")
-            # [FIX] Dùng biến last_missing_name thay vì name
-            print(f"          (Ví dụ file thiếu: {last_missing_name})")
+            print(f"[WARNING] Đã loại bỏ {missing_count} file bị thiếu ảnh/mask thực tế.")
+            print(f"          (Ví dụ file thiếu: {last_missing_info})")
 
-        print(f"[INFO] Final load tập {mode.upper()}: {len(self.names)} mẫu hợp lệ.")
-        # ============================================================
+        print(f"[INFO] Final load tập {mode.upper()}: {len(self.samples)} mẫu hợp lệ.")
+
+        if len(self.samples) == 0:
+            raise RuntimeError(
+                f"Lỗi: Không load được mẫu nào! Vui lòng kiểm tra lại đường dẫn trong file .txt hoặc data_root.")
 
         # Augmentation
         if augment and mode == "train":
@@ -86,17 +103,22 @@ class LandCoverDataset(Dataset):
             self.transform = A.Compose([ToTensorV2()])
 
     def __len__(self):
-        return len(self.names)
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        base = self.names[idx]
-        img_path = os.path.join(self.image_dir, f"{base}.tif")
-        mask_path = os.path.join(self.mask_dir, f"{base}.png")
+        # Lấy thông tin từ danh sách đã parse (bao gồm cả nguồn gốc)
+        name, source_folder = self.samples[idx]
+
+        # Xây dựng đường dẫn dựa trên nguồn gốc thực tế (source_folder)
+        # VD: File thuộc tập VAL nhưng nằm vật lý ở folder TRAIN -> code sẽ tìm trong TRAIN
+        img_path = os.path.join(self.data_root, source_folder, "images", f"{name}.tif")
+        mask_path = os.path.join(self.data_root, source_folder, "masks", f"{name}.png")
 
         try:
             img = tifffile.imread(img_path).astype(np.float32)
         except Exception:
-            print(f"[ERROR] File lỗi format: {img_path}")
+            # Fallback an toàn (trả về ảnh đen thay vì crash)
+            print(f"[ERR] Lỗi đọc file: {img_path}")
             img = np.zeros((128, 128, 10), dtype=np.float32)
 
         min_v, max_v = img.min(), img.max()
@@ -117,25 +139,18 @@ class LandCoverDataset(Dataset):
 # 2. HÀM KIỂM TRA (CHECKER)
 # =========================
 def check_existing_splits(data_root):
-    required_txt = ["train.txt", "val.txt", "test.txt"]
-    print(f"\n--- KIỂM TRA DỮ LIỆU TẠI: '{data_root}' ---")
+    # Chỉ check file txt vì file ảnh giờ nằm rải rác
     all_ok = True
-    for fname in required_txt:
-        fpath = os.path.join(data_root, fname)
+    print(f"\n--- KIỂM TRA FILE LIST TẠI: '{data_root}' ---")
+    for f in ["train.txt", "val.txt", "test.txt"]:
+        fpath = os.path.join(data_root, f)
         if os.path.exists(fpath):
-            with open(fpath, 'r') as f:
-                count = len(f.read().splitlines())
-            print(f"   {fname:<10} : OK ({count} mẫu)")
+            # Đếm số dòng
+            with open(fpath, 'r') as file:
+                lines = len(file.readlines())
+            print(f"   {f:<10}: OK ({lines} dòng)")
         else:
-            print(f"   {fname:<10} : KHÔNG TÌM THẤY")
-            all_ok = False
-
-    for folder in ["train", "val", "test"]:
-        dpath = os.path.join(data_root, folder)
-        if os.path.exists(dpath):
-            print(f"   Folder {folder:<5}: OK")
-        else:
-            print(f"   Folder {folder:<5}: KHÔNG TÌM THẤY")
+            print(f"   {f:<10}: KHÔNG TÌM THẤY")
             all_ok = False
     return all_ok
 
@@ -146,8 +161,9 @@ if __name__ == "__main__":
     print(f"[DEBUG] Script đang chạy tại: {current_dir}")
 
     if check_existing_splits(ROOT):
-        print("\n--> Cấu trúc dữ liệu chuẩn. Đang thử load mẫu...")
+        print("\n--> File list ổn. Đang test load mẫu Val...")
         try:
+            # Test với tập Val (tập dễ lỗi nhất do rebalance)
             ds = LandCoverDataset(ROOT, mode="val", augment=False)
             if len(ds) > 0:
                 img, mask = ds[0]
