@@ -28,12 +28,13 @@ PIXEL_SIZE_METERS = 5
 PIXEL_AREA_KM2 = (PIXEL_SIZE_METERS ** 2) / 1_000_000
 
 COLOR_MAP = np.array([
-    [0, 0, 0],       # 0: Đen (Background)
-    [139, 0, 0],     # 1: Đỏ sậm
-    [255, 165, 0],   # 2: Cam
-    [255, 255, 0],   # 3: Vàng
-    [50, 205, 50]    # 4: Xanh lá
+    [0, 0, 0],  # 0: Đen (Background)
+    [139, 0, 0],  # 1: Đỏ sậm
+    [255, 165, 0],  # 2: Cam
+    [255, 255, 0],  # 3: Vàng
+    [50, 205, 50]  # 4: Xanh lá
 ], dtype=np.uint8)
+
 
 # =========================
 # SEED FIXER
@@ -46,6 +47,7 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
 
 # =========================
 # LOSS
@@ -88,6 +90,7 @@ class JointLoss(nn.Module):
     def forward(self, preds, targets):
         return 0.5 * self.ce(preds, targets) + 0.5 * self.dice(preds, targets)
 
+
 # =========================
 # METRICS & AREA
 # =========================
@@ -107,9 +110,10 @@ def compute_area_from_mask(mask):
     valid = mask != IGNORE_INDEX
     for cls in range(NUM_CLASSES):
         areas[f"L{cls}"] = (
-            np.logical_and(mask == cls, valid).sum() * PIXEL_AREA_KM2
+                np.logical_and(mask == cls, valid).sum() * PIXEL_AREA_KM2
         )
     return areas
+
 
 # =========================
 # VISUALIZATION (5 Tách biệt, 3 cột)
@@ -125,23 +129,24 @@ def save_qualitative(imgs, gts, preds, base_path, n=5):
         # Cột 1: Input
         img_rgb = np.clip(imgs[i, :3].transpose(1, 2, 0), 0, 1)
         axs[0].imshow(img_rgb)
-        axs[0].set_title(f"Input (Sample {i+1})")
+        axs[0].set_title(f"Input (Sample {i + 1})")
         axs[0].axis("off")
 
         # Cột 2: Ground Truth
         axs[1].imshow(COLOR_MAP[gts[i]])
-        axs[1].set_title(f"Ground Truth (Sample {i+1})")
+        axs[1].set_title(f"Ground Truth (Sample {i + 1})")
         axs[1].axis("off")
 
         # Cột 3: Prediction
         axs[2].imshow(COLOR_MAP[preds[i]])
-        axs[2].set_title(f"Prediction (Sample {i+1})")
+        axs[2].set_title(f"Prediction (Sample {i + 1})")
         axs[2].axis("off")
 
         plt.tight_layout()
-        save_name = base_path.replace(".png", f"_sample_{i+1}.png")
+        save_name = base_path.replace(".png", f"_sample_{i + 1}.png")
         plt.savefig(save_name, dpi=200, bbox_inches='tight')
         plt.close(fig)
+
 
 def plot_learning_curves(df, path):
     fig, ax = plt.subplots(1, 2, figsize=(14, 5))
@@ -156,6 +161,7 @@ def plot_learning_curves(df, path):
     plt.savefig(path, dpi=300)
     plt.close()
 
+
 def plot_area_curve(df, path):
     plt.figure(figsize=(10, 6))
     for cls in range(NUM_CLASSES):
@@ -168,6 +174,7 @@ def plot_area_curve(df, path):
     plt.tight_layout()
     plt.savefig(path, dpi=300)
     plt.close()
+
 
 # =========================
 # VALIDATE
@@ -215,6 +222,7 @@ def validate(model, loader, criterion, device):
     acc = np.mean(preds_all[valid_mask] == targets_all[valid_mask])
 
     return np.mean(losses), acc, miou, ious, area_gt, area_pr, vis
+
 
 # =========================
 # TRAIN (Thêm Hỗ trợ Grid Search)
@@ -304,6 +312,7 @@ def train(model, train_loader, val_loader, args, device, out_dir, opt_name="Adam
     # TRẢ VỀ KẾT QUẢ CHO GRID SEARCH
     return best_miou
 
+
 # =========================
 # MAIN - GRID SEARCH 80 TRƯỜNG HỢP
 # =========================
@@ -311,7 +320,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--processed-path", default="dataset_final/train")
     parser.add_argument("--output", default="outputs_grid_search")
-    parser.add_argument("--epochs", type=int, default=15) # 15 epoch để đủ phân loại hạt giống tốt/xấu
+    parser.add_argument("--epochs", type=int, default=15)  # 15 epoch để đủ phân loại hạt giống tốt/xấu
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=2)
     args = parser.parse_args()
@@ -343,9 +352,9 @@ def main():
     for opt in optimizers:
         for lr in learning_rates:
             for seed in seeds:
-                print(f"\n{'='*60}")
+                print(f"\n{'=' * 60}")
                 print(f" TRIAL {trial}/{total_trials}: Opt = {opt} | LR = {lr} | Seed = {seed}")
-                print(f"{'='*60}")
+                print(f"{'=' * 60}")
 
                 set_seed(seed)
                 model = GRAUpp(num_classes=NUM_CLASSES, input_channels=10).to(device)
@@ -372,15 +381,16 @@ def main():
                 torch.cuda.empty_cache()
                 trial += 1
 
-    print(f"\n{'*'*60}")
+    print(f"\n{'*' * 60}")
     print(f" CẤU HÌNH VÔ ĐỊCH: Opt = {best_config[0]} | LR = {best_config[1]} | Seed = {best_config[2]}")
     print(f" ĐẠT mIoU CAO NHẤT = {best_overall_miou:.4f}")
-    print(f"{'*'*60}")
+    print(f"{'*' * 60}")
 
     df_grid = pd.DataFrame(grid_results)
     df_grid.sort_values(by="Best_mIoU", ascending=False, inplace=True)
     df_grid.to_excel(os.path.join(base_out_dir, "Grid_Search_Summary.xlsx"), index=False)
     print(f"[DONE] File báo cáo tổng hợp 80 trường hợp lưu tại: {base_out_dir}")
+
 
 if __name__ == "__main__":
     main()

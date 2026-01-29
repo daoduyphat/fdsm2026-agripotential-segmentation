@@ -243,19 +243,31 @@ class GRAUpp(nn.Module):
         s2 = (x2_0.shape[2], x2_0.shape[3])
         s3 = (x3_0.shape[2], x3_0.shape[3])
 
-        x0_1 = self.conv0_1(torch.cat([x0_0, F.interpolate(self.reduce1(x1_0), s0, mode='bilinear', align_corners=True)], 1))
-        x1_1 = self.conv1_1(torch.cat([x1_0, F.interpolate(self.reduce2(x2_0), s1, mode='bilinear', align_corners=True)], 1))
-        x2_1 = self.conv2_1(torch.cat([x2_0, F.interpolate(self.reduce3(x3_0), s2, mode='bilinear', align_corners=True)], 1))
-        x3_1 = self.conv3_1(torch.cat([x3_0, F.interpolate(self.reduce4(x4_0), s3, mode='bilinear', align_corners=True)], 1))
+        x0_1 = self.conv0_1(
+            torch.cat([x0_0, F.interpolate(self.reduce1(x1_0), s0, mode='bilinear', align_corners=True)], 1))
+        x1_1 = self.conv1_1(
+            torch.cat([x1_0, F.interpolate(self.reduce2(x2_0), s1, mode='bilinear', align_corners=True)], 1))
+        x2_1 = self.conv2_1(
+            torch.cat([x2_0, F.interpolate(self.reduce3(x3_0), s2, mode='bilinear', align_corners=True)], 1))
+        x3_1 = self.conv3_1(
+            torch.cat([x3_0, F.interpolate(self.reduce4(x4_0), s3, mode='bilinear', align_corners=True)], 1))
 
-        x0_2 = self.conv0_2(torch.cat([x0_0, x0_1, F.interpolate(self.reduce1(x1_1), s0, mode='bilinear', align_corners=True)], 1))
-        x1_2 = self.conv1_2(torch.cat([x1_0, x1_1, F.interpolate(self.reduce2(x2_1), s1, mode='bilinear', align_corners=True)], 1))
-        x2_2 = self.conv2_2(torch.cat([x2_0, x2_1, F.interpolate(self.reduce3(x3_1), s2, mode='bilinear', align_corners=True)], 1))
+        x0_2 = self.conv0_2(
+            torch.cat([x0_0, x0_1, F.interpolate(self.reduce1(x1_1), s0, mode='bilinear', align_corners=True)], 1))
+        x1_2 = self.conv1_2(
+            torch.cat([x1_0, x1_1, F.interpolate(self.reduce2(x2_1), s1, mode='bilinear', align_corners=True)], 1))
+        x2_2 = self.conv2_2(
+            torch.cat([x2_0, x2_1, F.interpolate(self.reduce3(x3_1), s2, mode='bilinear', align_corners=True)], 1))
 
-        x0_3 = self.conv0_3(torch.cat([x0_0, x0_1, x0_2, F.interpolate(self.reduce1(x1_2), s0, mode='bilinear', align_corners=True)], 1))
-        x1_3 = self.conv1_3(torch.cat([x1_0, x1_1, x1_2, F.interpolate(self.reduce2(x2_2), s1, mode='bilinear', align_corners=True)], 1))
+        x0_3 = self.conv0_3(
+            torch.cat([x0_0, x0_1, x0_2, F.interpolate(self.reduce1(x1_2), s0, mode='bilinear', align_corners=True)],
+                      1))
+        x1_3 = self.conv1_3(
+            torch.cat([x1_0, x1_1, x1_2, F.interpolate(self.reduce2(x2_2), s1, mode='bilinear', align_corners=True)],
+                      1))
 
-        x0_4 = self.conv0_4(torch.cat([x0_0, x0_1, x0_2, x0_3, F.interpolate(self.reduce1(x1_3), s0, mode='bilinear', align_corners=True)], 1))
+        x0_4 = self.conv0_4(torch.cat(
+            [x0_0, x0_1, x0_2, x0_3, F.interpolate(self.reduce1(x1_3), s0, mode='bilinear', align_corners=True)], 1))
 
         out_size = (x.shape[2], x.shape[3])
         out4 = F.interpolate(self.final_x0_4(x0_4), out_size, mode='bilinear', align_corners=True)

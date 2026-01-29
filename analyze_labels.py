@@ -1,4 +1,5 @@
 import os
+
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import argparse
@@ -10,6 +11,7 @@ from tqdm import tqdm
 
 # [IMPORTANT] Force Matplotlib to run in the background to prevent freezing on Windows
 import matplotlib
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
@@ -79,7 +81,8 @@ def analyze_dataset_precise(mask_dir, save_path="detailed_report_5_classes_bfpr.
     print(f"Total images scanned: {total_images}")
     print(f"Total pixels scanned: {total_pixels:,}")
     print("-" * 90)
-    print(f"{'ID':<3} | {'Class Name':<12} | {'Pixel Count':<18} | {'Pixel %':<8} | {'Image Presence %':<18} | {'Weight'}")
+    print(
+        f"{'ID':<3} | {'Class Name':<12} | {'Pixel Count':<18} | {'Pixel %':<8} | {'Image Presence %':<18} | {'Weight'}")
     print("-" * 90)
 
     for i in range(num_classes):
@@ -89,7 +92,8 @@ def analyze_dataset_precise(mask_dir, save_path="detailed_report_5_classes_bfpr.
         w = weights[i]
         pix_percent = (pix_count / total_pixels) * 100
         img_percent = (img_count / total_images) * 100
-        print(f"{i:<3} | {name:<12} | {pix_count:<18,} | {pix_percent:5.2f}%   | {img_count:<5} imgs ({img_percent:5.1f}%) | {w:.4f}")
+        print(
+            f"{i:<3} | {name:<12} | {pix_count:<18,} | {pix_percent:5.2f}%   | {img_count:<5} imgs ({img_percent:5.1f}%) | {w:.4f}")
 
     print("=" * 90)
     print("\n[Action] Copy this line into your train.py to balance the dataset:")
@@ -123,10 +127,11 @@ def analyze_dataset_precise(mask_dir, save_path="detailed_report_5_classes_bfpr.
         axes[2].set_ylabel("Weight Value")
         axes[2].grid(axis='y', linestyle='--', alpha=0.5)
 
-        plt.suptitle("DATASET ANALYSIS REPORT (AGRICULTURAL POTENTIAL - 5 CLASSES)", fontsize=18, fontweight='bold', y=0.98)
-        plt.tight_layout(pad=2.0) # Fix margin issues
+        plt.suptitle("DATASET ANALYSIS REPORT (AGRICULTURAL POTENTIAL - 5 CLASSES)", fontsize=18, fontweight='bold',
+                     y=0.98)
+        plt.tight_layout(pad=2.0)  # Fix margin issues
         plt.savefig(save_path, dpi=300)
-        plt.close(fig) # Free up RAM immediately
+        plt.close(fig)  # Free up RAM immediately
         print(f"\n[INFO] Chart saved to: {save_path}")
 
     except Exception as e:
