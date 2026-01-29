@@ -19,59 +19,35 @@ Phân đoạn ảnh vệ tinh đa phổ (10 kênh) thành 5 lớp (0–4) và ư
 
 ## Sơ Đồ Pipeline
 
-```mermaid
-flowchart TD
-    A["HDF5 gốc
-    Sentinel-2 & labels"]
-        -->|export_all_from_h5.py|
-    B["OUTPUT_ROOT
-    train / val / test
-    month / images, masks"]
+```text
+Pipeline
 
-    B -->|merge_all_months.py|
-    C["dataset_final
-    train / val / test
-    images, masks"]
-
-    C -->|generate_split_txt.py|
-    D["train.txt
-    val.txt
-    test.txt
-    (basename only)"]
-
-    D -->|verify_data.py|
-    E{"Kiểm tra tồn tại
-    và rò rỉ"}
-
-    E -->|OK|
-    F["dataset_pruning.py
-    (optional)"]
-
-    F --> G["rebalance_data.py
-    (optional 70/20/10)"]
-
-    G -->|normalize_split_txt.py|
-    H["Split files chuẩn
-    basename only"]
-
-    H -->|analyze_labels.py|
-    I["Thống kê nhãn
-    gợi ý class weights"]
-
-    H -->|train.py|
-    J["Huấn luyện chính
-    log + best model"]
-
-    H -->|gridsearch.py|
-    K["Grid Search
-    Opt x LR x Seed"]
-
-    K -->|bestgridsearch.py|
-    L["MASTER_RANKING.xlsx"]
-
-    J -->|test_model.py|
-    M["Test report
-    IoU + Area km2"]
+[HDF5 gốc: Sentinel-2 & labels]
+    | export_all_from_h5.py
+    v
+[OUTPUT_ROOT: train/val/test per-month images,masks]
+    | merge_all_months.py
+    v
+[dataset_final: train/val/test images,masks]
+    | generate_split_txt.py
+    v
+[train.txt | val.txt | test.txt]
+    | verify_data.py
+    v
+[Kiểm tra tồn tại & rò rỉ] --OK--> (tuỳ chọn) dataset_pruning.py -> rebalance_data.py (70/20/10)
+    | normalize_split_txt.py
+    v
+[Split files chuẩn: basename only]
+    | \
+    |  \--> analyze_labels.py --> [Thống kê nhãn, gợi ý class weights]
+    |
+    +--> train.py --> [Huấn luyện: log + best model]
+    |
+    +--> gridsearch.py --> [Grid Search: Optimizer × LR × Seed]
+            |
+            +--> bestgridsearch.py --> [MASTER_RANKING.xlsx]
+    |
+    +--> test_model.py --> [Test report: IoU + Area km²]
 ```
 Lưu ý:
 - `OUTPUT_ROOT` là thư mục trung gian sau khi xuất từ HDF5.
