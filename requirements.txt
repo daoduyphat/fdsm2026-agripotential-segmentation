@@ -14,3 +14,4 @@ h5py
 seaborn
 tifffile
 xlsxwriter
+timm

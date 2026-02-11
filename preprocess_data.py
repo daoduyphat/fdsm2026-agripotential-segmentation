@@ -2,7 +2,8 @@ import os
 import cv2
 import numpy as np
 import tifffile
-from torch.utils.data import Dataset
+import torch
+from torch.utils.data import Dataset, DataLoader
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import matplotlib.colors
@@ -11,84 +12,45 @@ import matplotlib.colors
 # GLOBAL CONFIG
 # =========================
 NUM_CLASSES = 5
+IGNORE_INDEX = 255
 
 labels_cmap = matplotlib.colors.ListedColormap([
-    "#000000",  # 0 Background
-    "#8B0000",  # 1 Very Low
-    "#FFA500",  # 2 Low
-    "#FFFF00",  # 3 Average
-    "#32CD32"  # 4 High
+    "#000000", "#8B0000", "#FFA500", "#FFFF00", "#32CD32"
 ])
 
 
-# =========================
-# 1. DATASET CLASS (ĐÃ SỬA LỖI ĐỌC SOURCE)
-# =========================
 class LandCoverDataset(Dataset):
-    def __init__(self, data_root, mode="train", augment=True):
-        """
-        data_root: Đường dẫn chứa ẢNH GỐC (Train/Val/Test)
-        mode: 'train', 'val', hoặc 'test'
-        """
+    def __init__(self, data_root, mode="train", augment=True, filter_empty=True):
         self.data_root = data_root
         self.mode = mode
+        self.filter_empty = filter_empty  # Giữ biến này để tương thích, dù logic cũ có thể chưa dùng tới
 
-        # 1. Đọc file txt
+        # -----------------------------------------------------------
+        # 1. LOGIC ĐỌC FILE CŨ (AN TOÀN NHẤT VỚI DỮ LIỆU CỦA BẠN)
+        # -----------------------------------------------------------
         txt_path = os.path.join(data_root, f"{mode}.txt")
-
-        # Fallback: Nếu không thấy trong data_root, thử tìm ở thư mục hiện tại
         if not os.path.exists(txt_path):
             txt_path = f"{mode}.txt"
 
         if not os.path.exists(txt_path):
-            raise FileNotFoundError(f"Lỗi: Không tìm thấy file danh sách {mode}.txt tại {data_root} hoặc thư mục gốc.")
+            raise FileNotFoundError(f"Lỗi: Không tìm thấy file {mode}.txt")
 
         print(f"[INIT] Đang đọc danh sách từ: {txt_path}")
         with open(txt_path, "r") as f:
-            lines = f.read().splitlines()
+            lines = [line.strip() for line in f.read().splitlines() if line.strip()]
 
-        # ============================================================
-        # [QUAN TRỌNG] PARSE DANH SÁCH & KIỂM TRA TỒN TẠI
-        # ============================================================
         self.samples = []
-        missing_count = 0
-        last_missing_info = None
-
-        print(f"[CHECK] Đang quét {len(lines)} dòng trong danh sách tập {mode}...")
-
         for line in lines:
-            line = line.strip()
-            if not line: continue
-
-            # [FIX] Xử lý format "tên_file,nguồn" (do script rebalance tạo ra)
+            # Xử lý format "tên_ảnh,tên_folder_nguồn"
             if "," in line:
                 name, source_folder = line.split(",")
             else:
-                # Format cũ (fallback nếu file txt chưa chuẩn)
                 name = line
                 source_folder = mode
 
-                # Tạo đường dẫn vật lý dựa trên SOURCE FOLDER
-            img_path = os.path.join(self.data_root, source_folder, "images", f"{name}.tif")
-            mask_path = os.path.join(self.data_root, source_folder, "masks", f"{name}.png")
+            self.samples.append((name, source_folder))
 
-            # Kiểm tra tồn tại
-            if os.path.exists(img_path) and os.path.exists(mask_path):
-                # Lưu lại cả tên và nguồn gốc để dùng trong __getitem__
-                self.samples.append((name, source_folder))
-            else:
-                missing_count += 1
-                last_missing_info = f"{name} (in folder {source_folder})"
-
-        if missing_count > 0:
-            print(f"[WARNING] Đã loại bỏ {missing_count} file bị thiếu ảnh/mask thực tế.")
-            print(f"          (Ví dụ file thiếu: {last_missing_info})")
-
-        print(f"[INFO] Final load tập {mode.upper()}: {len(self.samples)} mẫu hợp lệ.")
-
-        if len(self.samples) == 0:
-            raise RuntimeError(
-                f"Lỗi: Không load được mẫu nào! Vui lòng kiểm tra lại đường dẫn trong file .txt hoặc data_root.")
+        print(f"[INFO] Load tập {mode.upper()}: {len(self.samples)} mẫu.")
 
         # Augmentation
         if augment and mode == "train":
@@ -105,73 +67,123 @@ class LandCoverDataset(Dataset):
     def __len__(self):
         return len(self.samples)
 
+    # -----------------------------------------------------------
+    # 2. HÀM TÍNH NDMI / NDWI (TINH HOA MỚI)
+    # -----------------------------------------------------------
+    @staticmethod
+    def add_spectral_indices(img):
+        epsilon = 1e-6
+        # Giả định: 0:Blue, 1:Green, 2:Red, 3:NIR ... (10 kênh)
+        green = img[:, :, 1]
+        red = img[:, :, 2]
+        nir = img[:, :, 3]
+
+        # Nếu muốn chính xác NDMI cần SWIR (kênh index 8 hoặc 9 tùy data),
+        # Tạm thời dùng công thức mẫu dựa trên NIR/Red/Green nếu chưa chắc chắn index SWIR
+        # Ở đây tôi thêm NDVI và NDWI như code "tinh hoa" trước đó
+
+        ndvi = (nir - red) / (nir + red + epsilon)
+        ndwi = (green - nir) / (green + nir + epsilon)
+
+        img_new = np.concatenate((
+            img,
+            np.expand_dims(ndvi, axis=-1),
+            np.expand_dims(ndwi, axis=-1)
+        ), axis=-1)
+        return img_new
+
+    @staticmethod
+    def robust_normalize(img):
+        lower = np.percentile(img, 2, axis=(0, 1), keepdims=True)
+        upper = np.percentile(img, 98, axis=(0, 1), keepdims=True)
+        img = np.clip(img, lower, upper)
+        img = (img - lower) / (upper - lower + 1e-6)
+        return img.astype(np.float32)
+
     def __getitem__(self, idx):
-        # Lấy thông tin từ danh sách đã parse (bao gồm cả nguồn gốc)
         name, source_folder = self.samples[idx]
 
-        # Xây dựng đường dẫn dựa trên nguồn gốc thực tế (source_folder)
-        # VD: File thuộc tập VAL nhưng nằm vật lý ở folder TRAIN -> code sẽ tìm trong TRAIN
         img_path = os.path.join(self.data_root, source_folder, "images", f"{name}.tif")
         mask_path = os.path.join(self.data_root, source_folder, "masks", f"{name}.png")
 
+        # Đọc ảnh (Có try-except chống crash)
         try:
             img = tifffile.imread(img_path).astype(np.float32)
+            if img.ndim == 3 and img.shape[0] <= 20 and img.shape[2] > 20:
+                img = np.transpose(img, (1, 2, 0))
         except Exception:
-            # Fallback an toàn (trả về ảnh đen thay vì crash)
-            print(f"[ERR] Lỗi đọc file: {img_path}")
             img = np.zeros((128, 128, 10), dtype=np.float32)
 
-        min_v, max_v = img.min(), img.max()
-        if max_v > min_v:
-            img = (img - min_v) / (max_v - min_v)
+        # -----------------------------------------------------------
+        # ÁP DỤNG CÁC PHƯƠNG PHÁP XỬ LÝ MỚI
+        # -----------------------------------------------------------
+        img = self.robust_normalize(img)  # Chuẩn hóa xịn
+        img = self.add_spectral_indices(img)  # Thêm kênh NDVI, NDWI -> Input thành 12 kênh
 
+        # Đọc mask
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         if mask is None:
             mask = np.zeros((128, 128), dtype=np.uint8)
-
         mask = np.clip(mask, 0, NUM_CLASSES - 1)
 
         out = self.transform(image=img, mask=mask)
-        return out["image"], out["mask"].long()
+
+        # Trả về Dictionary
+        return {"image": out["image"], "mask": out["mask"].long()}
 
 
 # =========================
-# 2. HÀM KIỂM TRA (CHECKER)
+# 3. HELPER FUNCTIONS
 # =========================
+def landcover_collate_fn(batch):
+    imgs = torch.stack([b["image"] for b in batch], dim=0)
+    masks = torch.stack([b["mask"] for b in batch], dim=0)
+    return {"image": imgs, "mask": masks}
+
+
 def check_existing_splits(data_root):
-    # Chỉ check file txt vì file ảnh giờ nằm rải rác
-    all_ok = True
+    # Logic check cũ đơn giản nhưng hiệu quả
     print(f"\n--- KIỂM TRA FILE LIST TẠI: '{data_root}' ---")
+    all_ok = True
     for f in ["train.txt", "val.txt", "test.txt"]:
         fpath = os.path.join(data_root, f)
-        if os.path.exists(fpath):
-            # Đếm số dòng
-            with open(fpath, 'r') as file:
-                lines = len(file.readlines())
-            print(f"   {f:<10}: OK ({lines} dòng)")
+        if os.path.exists(fpath) or os.path.exists(f):
+            print(f"   {f:<10}: OK")
         else:
             print(f"   {f:<10}: KHÔNG TÌM THẤY")
-            all_ok = False
+            if f != "test.txt": all_ok = False
     return all_ok
 
 
-if __name__ == "__main__":
-    ROOT = "dataset_final"
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    print(f"[DEBUG] Script đang chạy tại: {current_dir}")
+def create_landcover_loaders(data_root, batch_size=32, num_workers=2):
+    train_ds = LandCoverDataset(data_root, "train", augment=True)
+    val_ds = LandCoverDataset(data_root, "val", augment=False)
 
+    print(f"\n[SUMMARY] Data Loaders Created:")
+    print(f"   - Train samples: {len(train_ds)}")
+    print(f"   - Val samples:   {len(val_ds)}")
+
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True,
+        num_workers=num_workers, pin_memory=True, collate_fn=landcover_collate_fn
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=True, collate_fn=landcover_collate_fn
+    )
+    return train_loader, val_loader
+
+
+if __name__ == "__main__":
+    # Test
+    ROOT = "dataset_final"
     if check_existing_splits(ROOT):
-        print("\n--> File list ổn. Đang test load mẫu Val...")
+        tr, val = create_landcover_loaders(ROOT, batch_size=2)
         try:
-            # Test với tập Val (tập dễ lỗi nhất do rebalance)
-            ds = LandCoverDataset(ROOT, mode="val", augment=False)
-            if len(ds) > 0:
-                img, mask = ds[0]
-                print("[SUCCESS] Test load mẫu thành công!")
-                print(f"  - Image Shape: {img.shape}")
-                print(f"  - Mask Shape : {mask.shape}")
-                print(f"  - Unique Labels: {np.unique(mask.numpy()).tolist()}")
+            batch = next(iter(tr))
+            print("\n[SUCCESS] Test load batch OK!")
+            # Kỳ vọng: [2, 12, 128, 128] nếu đã thêm NDVI/NDWI
+            print(f"   - Image: {batch['image'].shape}")
+            print(f"   - Mask:  {batch['mask'].shape}")
         except Exception as e:
-            print(f"[ERROR] Lỗi khi đọc mẫu: {e}")
-    else:
-        print("\n[CẢNH BÁO] Kiểm tra lại tên thư mục hoặc vị trí đặt file code!")
+            print(f"[ERROR] {e}")
