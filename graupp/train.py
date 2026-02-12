@@ -261,7 +261,8 @@ def train(model, train_loader, val_loader, args, device, out_dir):
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+    # Đã bỏ verbose=True
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     scaler = GradScaler()
     weights = torch.tensor(FINAL_CLASS_WEIGHTS, device=device).float()

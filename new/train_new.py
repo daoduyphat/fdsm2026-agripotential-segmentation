@@ -239,7 +239,7 @@ def train(model, train_loader, val_loader, args, device, out_dir):
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     scaler = GradScaler()
     criterion = AdvancedCombinedLoss()
@@ -248,7 +248,6 @@ def train(model, train_loader, val_loader, args, device, out_dir):
     best_miou = -1.0
     best_record = None
 
-    # Early Stopping Variables
     early_stop_patience = 7
     early_stop_counter = 0
 
@@ -307,11 +306,10 @@ def train(model, train_loader, val_loader, args, device, out_dir):
         }
         history.append(record)
 
-        # Logic Early Stopping & Save Best
         if miou > best_miou:
             best_miou = miou
             best_record = record
-            early_stop_counter = 0  # Reset counter khi có kết quả tốt hơn
+            early_stop_counter = 0
 
             torch.save(model.state_dict(), os.path.join(out_dir, "best_model.pth"))
             if vis:
@@ -324,7 +322,6 @@ def train(model, train_loader, val_loader, args, device, out_dir):
         torch.save(model.state_dict(), os.path.join(out_dir, "last_model.pth"))
         save_logs(history, best_record, out_dir)
 
-        # Check Early Stopping
         if early_stop_counter >= early_stop_patience:
             print(f"Early Stopping triggered at Epoch {epoch}. Best mIoU: {best_miou:.4f}")
             break
