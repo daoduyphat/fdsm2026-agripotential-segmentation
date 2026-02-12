@@ -119,8 +119,10 @@ def plot_graphs(df, out_dir):
 
     plt.figure(figsize=(10, 6))
     for cls in range(NUM_CLASSES):
-        plt.plot(df["epoch"], df[f"GT_L{cls}"], label=f"GT {CLASS_NAMES[cls]}", linestyle='-')
-        plt.plot(df["epoch"], df[f"Pred_L{cls}"], label=f"Pred {CLASS_NAMES[cls]}", linestyle='--')
+        # Kiểm tra key tồn tại để tránh KeyError
+        if f"GT_L{cls}" in df.columns:
+            plt.plot(df["epoch"], df[f"GT_L{cls}"], label=f"GT {CLASS_NAMES[cls]}", linestyle='-')
+            plt.plot(df["epoch"], df[f"Pred_L{cls}"], label=f"Pred {CLASS_NAMES[cls]}", linestyle='--')
     plt.title("Area Estimation: Ground Truth vs Prediction")
     plt.xlabel("Epoch")
     plt.ylabel("Area (km2)")
@@ -261,7 +263,7 @@ def train(model, train_loader, val_loader, args, device, out_dir):
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    # [ĐÃ SỬA] Đã bỏ verbose=True
+    # Đã bỏ verbose=True
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     scaler = GradScaler()
@@ -327,6 +329,7 @@ def train(model, train_loader, val_loader, args, device, out_dir):
                 f"{name:<15} | {iou_val:<10} | {area_pr[f'L{i}']:.4f}       | {area_gt[f'L{i}']:.4f}       | {diff:+.4f}")
         print("-" * 75 + "\n")
 
+        # [FIX] Dùng key GT_L{i} thay vì tên class để khớp với plot_graphs
         record = {
             "epoch": epoch,
             "train_loss": avg_train_loss,
@@ -335,8 +338,8 @@ def train(model, train_loader, val_loader, args, device, out_dir):
             "accuracy": acc,
             "lr": current_lr,
             **{f"IoU_{name}": ious[i] for i, name in enumerate(CLASS_NAMES)},
-            **{f"GT_{name}": area_gt[f"L{i}"] for i, name in enumerate(CLASS_NAMES)},
-            **{f"Pred_{name}": area_pr[f"L{i}"] for i, name in enumerate(CLASS_NAMES)}
+            **{f"GT_L{i}": area_gt[f"L{i}"] for i in range(NUM_CLASSES)},
+            **{f"Pred_L{i}": area_pr[f"L{i}"] for i in range(NUM_CLASSES)}
         }
         history.append(record)
 
