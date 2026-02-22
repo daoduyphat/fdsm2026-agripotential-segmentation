@@ -19,7 +19,7 @@ try:
 except ImportError:
     profile = None
 
-from uper import ConvNeXtV2UperNet
+from resnet50 import ResNet50UNetPlusPlus
 from preprocess_new import create_landcover_loaders, check_existing_splits
 
 NUM_CLASSES = 5
@@ -187,7 +187,7 @@ def train(model, train_loader, val_loader, args, device, out_dir):
     params_num, flops_num = compute_model_complexity(model, (1, INPUT_CHANNELS, 128, 128), device)
     flops_g = flops_num / 1e9
 
-    print(f"MODEL: ConvNeXt V2 Atto + UperNet")
+    print(f"MODEL: ResNet50 + UNet++")
     print(f"PARAMS: {params_num:,}")
     print(f"FLOPs : {flops_g:.2f} G")
     print(f"DEVICE: {device}")
@@ -217,7 +217,12 @@ def train(model, train_loader, val_loader, args, device, out_dir):
 
             optimizer.zero_grad()
             with autocast():
-                loss = criterion(model(imgs), masks)
+                out = model(imgs)
+                if isinstance(out, list):
+                    loss = criterion(out[-1], masks) + 0.4 * sum(criterion(o, masks) for o in out[:-1])
+                else:
+                    loss = criterion(out, masks)
+
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -280,7 +285,7 @@ def main():
     set_seed(0)
     parser = argparse.ArgumentParser()
     parser.add_argument("--processed-path", default="dataset_final")
-    parser.add_argument("--output", default="final_result_uper")
+    parser.add_argument("--output", default="final_result_resnet50_unetpp")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -301,7 +306,8 @@ def main():
         num_workers=args.num_workers
     )
 
-    model = ConvNeXtV2UperNet(num_classes=NUM_CLASSES, input_channels=INPUT_CHANNELS).to(device)
+    model = ResNet50UNetPlusPlus(num_classes=NUM_CLASSES, input_channels=INPUT_CHANNELS, pretrained=True,
+                                 deep_supervision=True, attention='eca').to(device)
     train(model, train_loader, val_loader, args, device, out_dir)
 
 
