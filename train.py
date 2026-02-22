@@ -19,7 +19,7 @@ try:
 except ImportError:
     profile = None
 
-from resnet50 import ResNet50UNetPlusPlus
+from resnet50 import GRAUpp
 from preprocess_new import create_landcover_loaders, check_existing_splits
 
 NUM_CLASSES = 5
@@ -34,7 +34,6 @@ FINAL_CLASS_WEIGHTS = [0.3680, 1.3597, 2.0944, 1.7449, 2.0141]
 
 warnings.filterwarnings("ignore")
 
-
 def set_seed(seed=0):
     random.seed(seed)
     np.random.seed(seed)
@@ -43,7 +42,6 @@ def set_seed(seed=0):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     os.environ["PYTHONHASHSEED"] = str(seed)
-
 
 def compute_model_complexity(model, input_size, device):
     if profile is None:
@@ -56,7 +54,6 @@ def compute_model_complexity(model, input_size, device):
     except:
         return 0, 0
 
-
 def compute_iou_global(preds, targets):
     ious = []
     valid = targets != IGNORE_INDEX
@@ -68,7 +65,6 @@ def compute_iou_global(preds, targets):
         ious.append(tp / denom if denom > 0 else np.nan)
     return ious, np.nanmean(ious)
 
-
 def compute_area_from_mask(mask):
     areas = {}
     valid = mask != IGNORE_INDEX
@@ -76,7 +72,6 @@ def compute_area_from_mask(mask):
         pixel_count = np.logical_and(mask == cls, valid).sum()
         areas[f"L{cls}"] = pixel_count * PIXEL_AREA_KM2
     return areas
-
 
 class JointLoss(nn.Module):
     def __init__(self, weight=None):
@@ -92,7 +87,6 @@ class JointLoss(nn.Module):
         union = (probs * valid).sum((2, 3)) + (t_onehot * valid).sum((2, 3))
         dice = 1 - (2 * inter + 1e-6) / (union + 1e-6)
         return 0.5 * self.ce(preds, targets) + 0.5 * dice.mean()
-
 
 def validate(model, loader, criterion, device):
     model.eval()
@@ -138,7 +132,6 @@ def validate(model, loader, criterion, device):
 
     return np.mean(losses), acc, miou, ious, area_gt, area_pr, vis_data
 
-
 def save_qualitative(imgs, gts, preds, base_path, n=5):
     num_images = min(n, imgs.shape[0])
     imgs = imgs.cpu().numpy()
@@ -159,7 +152,6 @@ def save_qualitative(imgs, gts, preds, base_path, n=5):
         plt.savefig(base_path.replace(".png", f"_{i + 1}.png"), dpi=150)
         plt.close(fig)
 
-
 def plot_graphs(df, out_dir):
     fig, ax = plt.subplots(1, 2, figsize=(14, 5))
     ax[0].plot(df["epoch"], df["train_loss"], label="Train")
@@ -172,7 +164,6 @@ def plot_graphs(df, out_dir):
     plt.savefig(os.path.join(out_dir, "metrics.png"))
     plt.close()
 
-
 def save_logs(history, best_record, out_dir):
     df = pd.DataFrame(history)
     excel_path = os.path.join(out_dir, "training_log.xlsx")
@@ -182,12 +173,11 @@ def save_logs(history, best_record, out_dir):
             pd.DataFrame([best_record]).to_excel(writer, sheet_name="Best Epoch", index=False)
     plot_graphs(df, out_dir)
 
-
 def train(model, train_loader, val_loader, args, device, out_dir):
     params_num, flops_num = compute_model_complexity(model, (1, INPUT_CHANNELS, 128, 128), device)
     flops_g = flops_num / 1e9
 
-    print(f"MODEL: ResNet50 + UNet++")
+    print(f"MODEL: GRAUpp (ResNet50 Backbone)")
     print(f"PARAMS: {params_num:,}")
     print(f"FLOPs : {flops_g:.2f} G")
     print(f"DEVICE: {device}")
@@ -280,12 +270,11 @@ def train(model, train_loader, val_loader, args, device, out_dir):
         torch.save(model.state_dict(), os.path.join(out_dir, "last_model.pth"))
         save_logs(history, best_record, out_dir)
 
-
 def main():
     set_seed(0)
     parser = argparse.ArgumentParser()
     parser.add_argument("--processed-path", default="dataset_final")
-    parser.add_argument("--output", default="final_result_resnet50_unetpp")
+    parser.add_argument("--output", default="final_result_graupp")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -306,10 +295,8 @@ def main():
         num_workers=args.num_workers
     )
 
-    model = ResNet50UNetPlusPlus(num_classes=NUM_CLASSES, input_channels=INPUT_CHANNELS, pretrained=True,
-                                 deep_supervision=True, attention='eca').to(device)
+    model = GRAUpp(num_classes=NUM_CLASSES, input_channels=INPUT_CHANNELS, pretrained=True, deep_supervision=True, attention='eca').to(device)
     train(model, train_loader, val_loader, args, device, out_dir)
-
 
 if __name__ == "__main__":
     main()
