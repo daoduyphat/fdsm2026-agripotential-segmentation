@@ -2,19 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
-class DoubleConv(nn.Module):
-    def __init__(self, in_ch, out_ch):
-        super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1),
-            nn.ReLU(inplace=True),
-        )
-
-    def forward(self, x):
-        return self.conv(x)
+from .unet import DoubleConv
 
 
 class UNetPP(nn.Module):
@@ -89,10 +77,11 @@ class UNetPP(nn.Module):
         x0_4 = self.conv0_4(torch.cat([x0_0, x0_1, x0_2, x0_3, self.up(x1_3)], dim=1))
 
         if self.deep_supervision:
-            out1 = torch.sigmoid(self.final1(x0_1))
-            out2 = torch.sigmoid(self.final2(x0_2))
-            out3 = torch.sigmoid(self.final3(x0_3))
-            out4 = torch.sigmoid(self.final4(x0_4))
-            return [out1, out2, out3, out4]
+            return [
+                self.final1(x0_1),
+                self.final2(x0_2),
+                self.final3(x0_3),
+                self.final4(x0_4),
+            ]
 
-        return torch.sigmoid(self.final(x0_4))
+        return self.final(x0_4)

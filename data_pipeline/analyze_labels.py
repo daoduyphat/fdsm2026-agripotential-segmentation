@@ -109,20 +109,20 @@ def analyze_dataset_precise(mask_dir, save_path="detailed_report_5_classes_bfpr.
         # [CHANGED] Removed the 6th color
         colors = ['black', '#8B0000', '#FFA500', '#FFFF00', '#32CD32']
 
-        bars1 = axes[0].bar(class_names, global_pixel_counts, color=colors, edgecolor='black')
+        axes[0].bar(class_names, global_pixel_counts, color=colors, edgecolor='black')
         axes[0].set_yscale('log')
         axes[0].set_title("1. Total Pixel Count (Log Scale)")
         axes[0].set_ylabel("Pixel Count")
         axes[0].grid(axis='y', linestyle='--', alpha=0.5)
 
         image_presence_percentages = (image_presence_counts / total_images) * 100
-        bars2 = axes[1].bar(class_names, image_presence_percentages, color=colors, edgecolor='black', alpha=0.8)
+        axes[1].bar(class_names, image_presence_percentages, color=colors, edgecolor='black', alpha=0.8)
         axes[1].set_ylim(0, 105)
         axes[1].set_title("2. Image Presence Rate (%)")
         axes[1].set_ylabel("% of Images")
         axes[1].grid(axis='y', linestyle='--', alpha=0.5)
 
-        bars3 = axes[2].bar(class_names, weights, color=colors, edgecolor='black', hatch='//')
+        axes[2].bar(class_names, weights, color=colors, edgecolor='black', hatch='//')
         axes[2].set_title("3. Training Weights (Class Weights)")
         axes[2].set_ylabel("Weight Value")
         axes[2].grid(axis='y', linestyle='--', alpha=0.5)
@@ -139,8 +139,8 @@ def analyze_dataset_precise(mask_dir, save_path="detailed_report_5_classes_bfpr.
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data-path", type=str, default=r"E:\datdai\dataset_final\train")
+    parser = argparse.ArgumentParser(description="Compute pixel-wise 5-class statistics and inverse-frequency weights.")
+    parser.add_argument("--data-path", type=str, default=os.path.join("dataset_final", "train"))
     parser.add_argument("--output", type=str, default="detailed_report_5_classes_atpr.png")
     args = parser.parse_args()
 

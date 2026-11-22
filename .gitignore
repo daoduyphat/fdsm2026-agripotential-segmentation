@@ -1,3 +1,38 @@
-venv/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+venv/
+.venv/
+env/
+
+# IDEs & OS
+.idea/
+.vscode/
+.cadence/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Data & Checkpoints
+dataset/
+dataset_final/
+dataset_final_TRASH/
+*.h5
+*.hdf5
+*.tif
+*.tiff
+*.pth
+*.pt
+*.onnx
+*.zip
+
+# Outputs & Logs
+outputs/
+results/
+runs/
+TEST_RUN_*/
+*.log
+*.xlsx
+*.png

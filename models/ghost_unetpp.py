@@ -4,11 +4,67 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
 
-class ResNet50Encoder(nn.Module):
+
+# -------------------- Ghost Convolution --------------------
+class GhostConv(nn.Module):
+    def __init__(self, in_ch, out_ch, kernel_size=3, stride=1, padding=1, ratio=2, relu=True):
+        super().__init__()
+        init_channels = int(out_ch / ratio)
+        new_channels = out_ch - init_channels
+
+        self.primary_conv = nn.Sequential(
+            nn.Conv2d(in_ch, init_channels, kernel_size, stride, padding, bias=False),
+            nn.BatchNorm2d(init_channels),
+            nn.ReLU(inplace=True) if relu else nn.Identity()
+        )
+
+        self.cheap_operation = nn.Sequential(
+            nn.Conv2d(init_channels, new_channels, 3, 1, 1, groups=init_channels, bias=False),
+            nn.BatchNorm2d(new_channels),
+            nn.ReLU(inplace=True) if relu else nn.Identity()
+        )
+
+    def forward(self, x):
+        x1 = self.primary_conv(x)
+        x2 = self.cheap_operation(x1)
+        return torch.cat([x1, x2], dim=1)
+
+
+# -------------------- Ghost BasicBlock (ResNet block) --------------------
+class GhostBasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, inplanes, planes, stride=1, downsample=None):
+        super().__init__()
+        self.conv1 = GhostConv(inplanes, planes, kernel_size=3, stride=stride, padding=1, relu=True)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = GhostConv(planes, planes, kernel_size=3, stride=1, padding=1, relu=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.downsample = downsample
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        identity = x
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        return self.relu(out)
+
+
+# -------------------- ResNet34 Encoder --------------------
+class ResNet34Encoder(nn.Module):
     def __init__(self, input_channels=3, pretrained=True):
         super().__init__()
-        weights = models.ResNet50_Weights.DEFAULT if pretrained else None
-        resnet = models.resnet50(weights=weights)
+        weights = models.ResNet34_Weights.DEFAULT if pretrained else None
+        resnet = models.resnet34(weights=weights)
 
         if input_channels != 3:
             old = resnet.conv1
@@ -20,12 +76,26 @@ class ResNet50Encoder(nn.Module):
                     new_conv1.weight[:] = old.weight.mean(dim=1, keepdim=True)
             resnet.conv1 = new_conv1
 
+        def _make_layer(block, inplanes, planes, blocks, stride=1):
+            downsample = None
+            if stride != 1 or inplanes != planes * block.expansion:
+                downsample = nn.Sequential(
+                    nn.Conv2d(inplanes, planes, kernel_size=1, stride=stride, bias=False),
+                    nn.BatchNorm2d(planes),
+                )
+            layers = [block(inplanes, planes, stride, downsample)]
+            inplanes = planes
+            for _ in range(1, blocks):
+                layers.append(block(inplanes, planes))
+            return nn.Sequential(*layers)
+
         self.conv1 = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu)
         self.maxpool = resnet.maxpool
-        self.layer1 = resnet.layer1
-        self.layer2 = resnet.layer2
-        self.layer3 = resnet.layer3
-        self.layer4 = resnet.layer4
+
+        self.layer1 = _make_layer(GhostBasicBlock, 64, 64, 3)
+        self.layer2 = _make_layer(GhostBasicBlock, 64, 128, 4, stride=2)
+        self.layer3 = _make_layer(GhostBasicBlock, 128, 256, 6, stride=2)
+        self.layer4 = _make_layer(GhostBasicBlock, 256, 512, 3, stride=2)
 
     def forward(self, x):
         x0 = self.conv1(x)
@@ -35,6 +105,10 @@ class ResNet50Encoder(nn.Module):
         x4 = self.layer4(x3)
         return x0, x1, x2, x3, x4
 
+
+# -------------------- Attention Modules --------------------
+
+# 1. ECA
 class ECA(nn.Module):
     def __init__(self, channels, b=1, gamma=2):
         super().__init__()
@@ -54,6 +128,8 @@ class ECA(nn.Module):
         y = self.sigmoid(y)
         return x * y
 
+
+# 2. CBAM
 class CBAM(nn.Module):
     def __init__(self, channels, ratio=16):
         super().__init__()
@@ -81,6 +157,8 @@ class CBAM(nn.Module):
         spatial_out = self.sigmoid_spatial(self.conv_spatial(torch.cat([avg_out, max_out], dim=1)))
         return out * spatial_out
 
+
+# -------------------- Residual Conv with Attention --------------------
 class ResidualConv(nn.Module):
     def __init__(self, in_ch, out_ch, attention=None):
         super().__init__()
@@ -112,13 +190,15 @@ class ResidualConv(nn.Module):
 
         return F.relu(out)
 
-class ResNet50UNetPlusPlus(nn.Module):
+
+# -------------------- GRAU++ --------------------
+class GRAUpp(nn.Module):
     def __init__(self, num_classes=5, input_channels=3, pretrained=True,
                  deep_supervision=True, attention='eca'):
         super().__init__()
 
-        self.filters = [64, 256, 512, 1024, 2048]
-        self.encoder = ResNet50Encoder(input_channels, pretrained)
+        self.filters = [64, 64, 128, 256, 512]
+        self.encoder = ResNet34Encoder(input_channels, pretrained)
         self.deep_supervision = deep_supervision
 
         self.reduce1 = nn.Conv2d(self.filters[1], self.filters[0], 1)
@@ -148,7 +228,9 @@ class ResNet50UNetPlusPlus(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        for m in self.modules():
+        for name, m in self.named_modules():
+            if name.startswith("encoder."):
+                continue
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
             elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):

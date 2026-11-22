@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class DoubleConv(nn.Module):
@@ -84,10 +83,4 @@ class UNet(nn.Module):
         m9 = torch.cat([c1, u9], dim=1)
         c9 = self.conv9(m9)
 
-        return torch.sigmoid(self.final(c9))
-
-
-# Ví dụ khởi tạo
-# model = UNet(input_channels=1, output_channels=1)
-# criterion = nn.BCELoss()
-# optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+        return self.final(c9)
