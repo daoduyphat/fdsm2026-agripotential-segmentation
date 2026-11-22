@@ -1,6 +1,6 @@
 # Comparative Analysis of Deep Learning Models for Agricultural Land Potential Mapping Using Multispectral Satellite Imagery
 
-Official repository for the paper accepted at **FDSM — International Conference on Fuzzy Systems and Data Mining** (*Frontiers in Artificial Intelligence and Applications*, IOS Press).
+Official repository for the paper accepted at **FDSM 2026 — International Conference on Fuzzy Systems and Data Mining** (*Frontiers in Artificial Intelligence and Applications*, IOS Press).
 
 ---
 
