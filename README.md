@@ -61,8 +61,8 @@ This benchmark uses the **AgriPotential** dataset:
 ## Installation
 
 ```bash
-git clone https://github.com/<your-username>/<your-repo-name>.git
-cd <your-repo-name>
+git clone https://github.com/daoduyphat/fdsm2026-agripotential-segmentation.git
+cd fdsm2026-agripotential-segmentation
 pip install -r requirements.txt
 ```
 
